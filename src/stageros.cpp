@@ -95,10 +95,12 @@ private:
         std::vector<ros::Publisher> camera_pubs; //multiple cameras
         std::vector<ros::Publisher> laser_pubs; //multiple lasers
 
+        Stg::Velocity target_vel; /// target velocity for acceleration control
         ros::Subscriber cmdvel_sub; //one cmd_vel subscriber
+        ros::Time base_last_cmd;
     };
 
-    std::vector<StageRobot const *> robotmodels_;
+    std::vector<StageRobot*> robotmodels_;
 
     // Used to remember initial poses for soft reset
     std::vector<Stg::Pose> initial_poses;
@@ -140,6 +142,9 @@ private:
     // Last published global pose of each robot
     std::vector<Stg::Pose> base_last_globalpos;
 
+    // Path for persistent world file. It will be saved when node exits
+    std::string persistent_file;
+    bool persistent_world;
 public:
     // Constructor; stage itself needs argc/argv.  fname is the .world file
     // that stage should load.
@@ -260,14 +265,21 @@ void
 StageNode::cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist const>& msg)
 {
     boost::mutex::scoped_lock lock(msg_lock);
-    this->positionmodels[idx]->SetSpeed(msg->linear.x,
-                                        msg->linear.y,
-                                        msg->angular.z);
+    Stg::ModelPosition * mp = this->positionmodels[idx];
+    assert(mp != NULL);
+
+    Stg::Velocity newVel(msg->linear.x, msg->linear.y, 0.0, msg->angular.z);
+
+    robotmodels_[idx]->target_vel = newVel;
+    robotmodels_[idx]->base_last_cmd = this->sim_time;
+
     this->base_last_cmd = this->sim_time;
 }
 
 StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool use_model_names)
 {
+	this->persistent_world = false;
+	this->persistent_file = fname;
     this->use_model_names = use_model_names;
     this->sim_time.fromSec(0.0);
     this->base_last_cmd.fromSec(0.0);
@@ -280,6 +292,10 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
     if(!localn.getParam("is_depth_canonical", isDepthCanonical))
         isDepthCanonical = true;
 
+    localn.param<std::string>("persistent_file", this->persistent_file, "");
+
+    if(!persistent_file.empty())
+    	persistent_world = true;
 
     // We'll check the existence of the world file, because libstage doesn't
     // expose its failure to open it.  Could go further with checks (e.g., is
@@ -303,15 +319,39 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
     // startup on some systems.
     // As of Stage 4.1.1, this update call causes a hang on start.
     //this->UpdateWorld();
-    this->world->Load(fname);
 
-    // We add our callback here, after the Update, so avoid our callback
-    // being invoked before we're ready.
-    this->world->AddUpdateCallback((Stg::world_callback_t)s_update, this);
+    /// Try to load a scene from persistent file
+    bool loaded = false;
+    if(persistent_world)
+    {
+    	if(this->world->Load(this->persistent_file))
+    	{
+    		ROS_INFO("Loaded world from persistent file %s", persistent_file.c_str());
+    		loaded = true;
+    	}
+    	else
+    		ROS_FATAL("Failed to load world from persistent file %s. Loading from source file", persistent_file.c_str());
+    }
 
-    this->world->ForEachDescendant((Stg::model_callback_t)ghfunc, this);
+    if(!loaded)
+    {
+    	if(this->world->Load(fname))
+    		loaded = true;
+    	else
+    	{
+    		ROS_FATAL("Failed to laod world from %s", fname);
+    	}
+    }
+
+    if(loaded)
+    {
+		// We add our callback here, after the Update, so avoid our callback
+		// being invoked before we're ready.
+		this->world->AddUpdateCallback((Stg::world_callback_t)s_update, this);
+
+		this->world->ForEachDescendant((Stg::model_callback_t)ghfunc, this);
+    }
 }
-
 
 // Subscribe to models of interest.  Currently, we find and subscribe
 // to the first 'laser' model and the first 'position' model.  Returns
@@ -392,14 +432,53 @@ StageNode::SubscribeModels()
 
 StageNode::~StageNode()
 {    
-    for (std::vector<StageRobot const*>::iterator r = this->robotmodels_.begin(); r != this->robotmodels_.end(); ++r)
+    for (std::vector<StageRobot*>::iterator r = this->robotmodels_.begin(); r != this->robotmodels_.end(); ++r)
         delete *r;
+
+    /// Save world before exit
+    if(persistent_world)
+    {
+    	ROS_INFO("Saving world state to %s", persistent_file.c_str());
+    	world->Save(this->persistent_file.c_str());
+    }
 }
 
 bool
 StageNode::UpdateWorld()
 {
     return this->world->UpdateAll();
+}
+
+void CalculateRobotControl(Stg::ModelPosition * mp, Stg::Velocity newVel)
+{
+ 	bool acceleration_control = true;
+    if(acceleration_control)
+    {
+		//Stg::Velocity newVel(msg->linear.x, msg->linear.y, 0.0, msg->angular.z);
+		Stg::Velocity vel = mp->GetVelocity();
+		double acceleration[3] = {0,0,0};
+
+		if(newVel.x > vel.x)
+			acceleration[0] = mp->acceleration_bounds[0].max;
+		else if(newVel.x < vel.x)
+			acceleration[0] = mp->acceleration_bounds[0].min;
+
+		if(newVel.y > vel.y)
+			acceleration[1] = mp->acceleration_bounds[1].max;
+		else if(newVel.y < vel.y)
+			acceleration[1] = mp->acceleration_bounds[1].min;
+
+		if(newVel.a > vel.a)
+			acceleration[2] = mp->acceleration_bounds[3].max;
+		else if(newVel.a < vel.a)
+			acceleration[2] = mp->acceleration_bounds[3].min;
+
+		mp->SetAcceleration(acceleration[0], acceleration[1], acceleration[2]);
+    }
+    else
+    {
+    	mp->SetSpeed(newVel);
+    }
 }
 
 void
@@ -417,17 +496,21 @@ StageNode::WorldCallback()
     }
 
     // TODO make this only affect one robot if necessary
+    /*
     if((this->base_watchdog_timeout.toSec() > 0.0) &&
             ((this->sim_time - this->base_last_cmd) >= this->base_watchdog_timeout))
     {
         for (size_t r = 0; r < this->positionmodels.size(); r++)
             this->positionmodels[r]->SetSpeed(0.0, 0.0, 0.0);
-    }
+    }*/
 
     //loop on the robot models
     for (size_t r = 0; r < this->robotmodels_.size(); ++r)
     {
         StageRobot const * robotmodel = this->robotmodels_[r];
+
+        CalculateRobotControl(robotmodel->positionmodel, robotmodel->target_vel);
+        //applyControl(robotmodel, )
 
         //loop on the laser devices for the current robot
         for (size_t s = 0; s < robotmodel->lasermodels.size(); ++s)
@@ -775,8 +858,9 @@ main(int argc, char** argv)
             r.sleep();
         }
     }
+
     t.join();
 
-    exit(0);
+    //exit(0);
 }
 
