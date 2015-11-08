@@ -110,6 +110,9 @@ private:
     
     bool isDepthCanonical;
     bool use_model_names;
+    bool use_acceleration_control;
+    bool use_common_root;
+    std::string root_frame_id;
 
     // A helper function that is executed for each stage model.  We use it
     // to search for models of interest.
@@ -162,6 +165,8 @@ public:
     // Do one update of the world.  May pause if the next update time
     // has not yet arrived.
     bool UpdateWorld();
+
+    void CalculateRobotControl(Stg::ModelPosition * mp, Stg::Velocity newVel);
 
     // Message callback for a MsgBaseVel message, which set velocities.
     void cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist const>& msg);
@@ -278,6 +283,7 @@ StageNode::cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist 
 
 StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool use_model_names)
 {
+	this->use_acceleration_control = false;
 	this->persistent_world = false;
 	this->persistent_file = fname;
     this->use_model_names = use_model_names;
@@ -293,6 +299,9 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
         isDepthCanonical = true;
 
     localn.param<std::string>("persistent_file", this->persistent_file, "");
+    localn.param<bool>("common_root", use_common_root, false);
+    localn.param<bool>("control_acceleration", this->use_acceleration_control, false);
+    localn.param<std::string>("root_frame_id", root_frame_id, "map");
 
     if(!persistent_file.empty())
     	persistent_world = true;
@@ -449,30 +458,53 @@ StageNode::UpdateWorld()
     return this->world->UpdateAll();
 }
 
-void CalculateRobotControl(Stg::ModelPosition * mp, Stg::Velocity newVel)
+/// Calculates new acceleration
+template<typename Scalar> Scalar calculateControl(Scalar target, Scalar &current, Scalar dt, Scalar accInc, Scalar accDec)
 {
- 	bool acceleration_control = true;
-    if(acceleration_control)
+	if (current >= target)	// deceleration profule
+	{
+		if (current - target < accDec*dt)
+		{
+			current = target;
+			return Scalar(0);//(current-target)/dt;
+		}
+		else
+		{
+			return -accDec;
+		}
+			//result = current - delta;
+	}
+	else	// acceleration profile
+	{
+		if (target - current < accInc*dt)
+		{
+			current = target;
+			return Scalar(0);//(target-current)/dt;//result = target;
+		}
+		else
+		{
+			return accInc;//result = current + delta;
+		}
+	}
+	//return result;
+	return Scalar(0);
+}
+
+void StageNode::CalculateRobotControl(Stg::ModelPosition * mp, Stg::Velocity newVel)
+{
+    if(use_acceleration_control)
     {
-		//Stg::Velocity newVel(msg->linear.x, msg->linear.y, 0.0, msg->angular.z);
+    	float dt = this->world->sim_interval * 0.000001;//1.0 / 30.0;
 		Stg::Velocity vel = mp->GetVelocity();
+		/// This velocity is used to fix 'integration' errors and make
+		/// robot follow target velocity instead of oscilation near it
+		Stg::Velocity fixedVel = vel;
 		double acceleration[3] = {0,0,0};
 
-		if(newVel.x > vel.x)
-			acceleration[0] = mp->acceleration_bounds[0].max;
-		else if(newVel.x < vel.x)
-			acceleration[0] = mp->acceleration_bounds[0].min;
-
-		if(newVel.y > vel.y)
-			acceleration[1] = mp->acceleration_bounds[1].max;
-		else if(newVel.y < vel.y)
-			acceleration[1] = mp->acceleration_bounds[1].min;
-
-		if(newVel.a > vel.a)
-			acceleration[2] = mp->acceleration_bounds[3].max;
-		else if(newVel.a < vel.a)
-			acceleration[2] = mp->acceleration_bounds[3].min;
-
+		acceleration[0] = calculateControl<double>(newVel.x, fixedVel.x, dt, fabs(mp->acceleration_bounds[0].min), mp->acceleration_bounds[0].max);
+		acceleration[1] = calculateControl<double>(newVel.y, fixedVel.y, dt, fabs(mp->acceleration_bounds[1].min), mp->acceleration_bounds[1].max);
+		acceleration[2] = calculateControl<double>(newVel.a, fixedVel.a, dt, fabs(mp->acceleration_bounds[3].min), mp->acceleration_bounds[3].max);
+		mp->SetVelocity(fixedVel);
 		mp->SetAcceleration(acceleration[0], acceleration[1], acceleration[2]);
     }
     else
@@ -589,8 +621,10 @@ StageNode::WorldCallback()
         //@todo Publish stall on a separate topic when one becomes available
         //this->odomMsgs[r].stall = this->positionmodels[r]->Stall();
         //
-        odom_msg.header.frame_id = mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
+        odom_msg.header.frame_id = use_common_root ?
+        		this->root_frame_id : mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
         odom_msg.header.stamp = sim_time;
+        odom_msg.child_frame_id = mapName("base_footprint", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
 
         robotmodel->odom_pub.publish(odom_msg);
 
@@ -601,12 +635,22 @@ StageNode::WorldCallback()
         tf.sendTransform(tf::StampedTransform(txOdom, sim_time,
                                               mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
                                               mapName("base_footprint", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
+        if(use_common_root)
+        {
+        	tf::Quaternion odomQ;
+			tf::quaternionMsgToTF(odom_msg.pose.pose.orientation, odomQ);
+			tf::Transform txOdom = tf::Transform::getIdentity();
+			tf.sendTransform(tf::StampedTransform(txOdom, sim_time,
+												  root_frame_id,
+												  mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
+        }
 
         // Also publish the ground truth pose and velocity
         Stg::Pose gpose = robotmodel->positionmodel->GetGlobalPose();
         tf::Quaternion q_gpose;
         q_gpose.setRPY(0.0, 0.0, gpose.a);
         tf::Transform gt(q_gpose, tf::Point(gpose.x, gpose.y, 0.0));
+        /// Does anybody use it?
         // Velocity is 0 by default and will be set only if there is previous pose and time delta>0
         Stg::Velocity gvel(0,0,0,0);
         if (this->base_last_globalpos.size()>r){
@@ -638,6 +682,8 @@ StageNode::WorldCallback()
 
         ground_truth_msg.header.frame_id = mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
         ground_truth_msg.header.stamp = sim_time;
+
+        ground_truth_msg.child_frame_id = mapName("base_footprint", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
 
         robotmodel->ground_truth_pub.publish(ground_truth_msg);
 
@@ -842,12 +888,17 @@ main(int argc, char** argv)
 
     boost::thread t = boost::thread(boost::bind(&ros::spin));
 
+    ros::NodeHandle private_nh("~");
+
+    double rate = 10;
+    private_nh.param<double>("rate", rate, 10.0);
+
     // New in Stage 4.1.1: must Start() the world.
     sn.world->Start();
 
     // TODO: get rid of this fixed-duration sleep, using some Stage builtin
     // PauseUntilNextUpdate() functionality.
-    ros::WallRate r(10.0);
+    ros::WallRate r(rate);
     while(ros::ok() && !sn.world->TestQuit())
     {
         if(gui)
