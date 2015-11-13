@@ -118,8 +118,6 @@ private:
     bool use_common_root;
 
     double map_publish_period;
-    int map_width;							//< height of the published map
-    int map_height;							//< width of the published map
     double map_resolution;					//< resolution for published map
     nav_msgs::OccupancyGrid map_cache;		//< cached grid map
     std::string map_model_name;				//< model name to be used as raster map source
@@ -281,27 +279,50 @@ StageNode::cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Resp
 void
 StageNode::mapTimer(const ros::TimerEvent & evt)
 {
-	map_cache.data.resize(this->map_width * this->map_height);
+
 	map_cache.header.frame_id = this->root_frame_id;
 	map_cache.header.stamp = this->sim_time;
-	map_cache.info.width = map_width;
-	map_cache.info.height = map_height;
 	map_cache.info.resolution = map_resolution;
 	map_cache.info.origin.orientation.w = 1.0;
 
-	unsigned char * data = reinterpret_cast<unsigned char*>(&map_cache.data.front());
-	Stg::Model * floor = NULL;
 
+	Stg::Model * floor = world->GetModel(this->map_model_name);
+
+	/*
 	if(!floor)
-		floor=world->GetModel("ground");
-	if(!floor)
-		floor=world->GetModel("floorplan");
-	if(!floor)
-		floor=world->GetGround();
+		floor=world->GetGround();*/
 
 	if(floor)
 	{
-		floor->Rasterize(data, map_width, map_height, map_resolution, map_resolution);
+		Stg::Geom geom = floor->GetGeom();
+
+		int width = ceilf(geom.size.x / map_resolution);
+		int height = ceilf(geom.size.y / map_resolution);
+
+		if(width * height == 0)
+		{
+			ROS_ERROR("Will not publish map with zero size");
+			return;
+		}
+
+		map_cache.info.width = width;
+		map_cache.info.height = height;
+		map_cache.data.resize(width * height);
+		unsigned char * data = reinterpret_cast<unsigned char*>(&map_cache.data.front());
+
+		/// Get floor data
+		floor->Rasterize(data, width, height, map_resolution, map_resolution);
+
+		Stg::Pose pose = floor->GetGlobalPose();
+		//Stg::bounds3d_t bounds = floor->blockgroup.BoundingBox();
+
+		map_cache.info.origin.position.x = pose.x - geom.size.x*0.5;
+		map_cache.info.origin.position.y = pose.y - geom.size.y*0.5;
+		/// Fixing 'colors' to match ROS nav_msgs::OccupancyGrid notation
+		for(int i = 0; i < width * height; i++)
+			if(data[i] > 0)
+				data[i] = 100;
+
 		this->map_pub_.publish(map_cache);
 	}
 }
@@ -329,9 +350,6 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
     this->use_model_names = use_model_names;
     this->sim_time.fromSec(0.0);
     this->base_last_cmd.fromSec(0.0);
-
-    this->map_width = 1024;
-    this->map_height = 1024;
     this->map_publish_period = -1.0;
     this->map_resolution = 0.05;
 
@@ -349,8 +367,6 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
     localn.param<bool>("control_acceleration", this->use_acceleration_control, false);
     localn.param<std::string>("root_frame_id", root_frame_id, "map");
 
-    localn.param<int>("map_width", map_width, 1024);
-    localn.param<int>("map_height", map_height, 1024);
     localn.param<double>("map_publish_period", map_publish_period, -1.0);
     localn.param<double>("map_resolution", map_resolution, 0.05);
     localn.param<std::string>("map_model_name", map_model_name, "ground");
