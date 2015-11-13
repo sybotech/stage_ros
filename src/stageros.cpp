@@ -47,6 +47,7 @@
 #include <sensor_msgs/CameraInfo.h>
 #include <nav_msgs/Odometry.h>
 #include <geometry_msgs/Twist.h>
+#include <nav_msgs/OccupancyGrid.h>
 #include <rosgraph_msgs/Clock.h>
 
 #include <std_srvs/Empty.h>
@@ -108,10 +109,21 @@ private:
   
     ros::Publisher clock_pub_;
     
+    ros::Publisher map_pub_;
+    ros::Timer map_timer_;
+
     bool isDepthCanonical;
     bool use_model_names;
     bool use_acceleration_control;
     bool use_common_root;
+
+    double map_publish_period;
+    int map_width;							//< height of the published map
+    int map_height;							//< width of the published map
+    double map_resolution;					//< resolution for published map
+    nav_msgs::OccupancyGrid map_cache;		//< cached grid map
+    std::string map_model_name;				//< model name to be used as raster map source
+
     std::string root_frame_id;
 
     // A helper function that is executed for each stage model.  We use it
@@ -170,6 +182,8 @@ public:
 
     // Message callback for a MsgBaseVel message, which set velocities.
     void cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist const>& msg);
+
+    void mapTimer(const ros::TimerEvent & evt);
 
     // Service callback for soft reset
     bool cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Response& response);
@@ -264,7 +278,33 @@ StageNode::cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Resp
   return true;
 }
 
+void
+StageNode::mapTimer(const ros::TimerEvent & evt)
+{
+	map_cache.data.resize(this->map_width * this->map_height);
+	map_cache.header.frame_id = this->root_frame_id;
+	map_cache.header.stamp = this->sim_time;
+	map_cache.info.width = map_width;
+	map_cache.info.height = map_height;
+	map_cache.info.resolution = map_resolution;
+	map_cache.info.origin.orientation.w = 1.0;
 
+	unsigned char * data = reinterpret_cast<unsigned char*>(&map_cache.data.front());
+	Stg::Model * floor = NULL;
+
+	if(!floor)
+		floor=world->GetModel("ground");
+	if(!floor)
+		floor=world->GetModel("floorplan");
+	if(!floor)
+		floor=world->GetGround();
+
+	if(floor)
+	{
+		floor->Rasterize(data, map_width, map_height, map_resolution, map_resolution);
+		this->map_pub_.publish(map_cache);
+	}
+}
 
 void
 StageNode::cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist const>& msg)
@@ -289,6 +329,12 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
     this->use_model_names = use_model_names;
     this->sim_time.fromSec(0.0);
     this->base_last_cmd.fromSec(0.0);
+
+    this->map_width = 1024;
+    this->map_height = 1024;
+    this->map_publish_period = -1.0;
+    this->map_resolution = 0.05;
+
     double t;
     ros::NodeHandle localn("~");
     if(!localn.getParam("base_watchdog_timeout", t))
@@ -302,6 +348,12 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
     localn.param<bool>("common_root", use_common_root, false);
     localn.param<bool>("control_acceleration", this->use_acceleration_control, false);
     localn.param<std::string>("root_frame_id", root_frame_id, "map");
+
+    localn.param<int>("map_width", map_width, 1024);
+    localn.param<int>("map_height", map_height, 1024);
+    localn.param<double>("map_publish_period", map_publish_period, -1.0);
+    localn.param<double>("map_resolution", map_resolution, 0.05);
+    localn.param<std::string>("map_model_name", map_model_name, "ground");
 
     if(!persistent_file.empty())
     	persistent_world = true;
@@ -372,6 +424,19 @@ int
 StageNode::SubscribeModels()
 {
     n_.setParam("/use_sim_time", true);
+
+    if(this->map_publish_period > 0.0)
+    {
+    	if(this->map_model_name.empty())
+    	{
+    		ROS_ERROR("No 'map_model_name' is specified, no map will be published");
+    	}
+    	else
+    	{
+			map_pub_ = n_.advertise<nav_msgs::OccupancyGrid>("world",5);
+			map_timer_ = n_.createTimer(ros::Duration(map_publish_period), &StageNode::mapTimer, this);
+    	}
+    }
 
     for (size_t r = 0; r < this->positionmodels.size(); r++)
     {
@@ -914,4 +979,3 @@ main(int argc, char** argv)
 
     //exit(0);
 }
-
