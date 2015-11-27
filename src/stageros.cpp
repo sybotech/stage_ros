@@ -578,7 +578,8 @@ int StageNode::StageRobot::cb_model(Stg::ModelPosition * mod, StageRobot * sr)
 
 void StageNode::CalculateRobotControl(Stg::ModelPosition* mp, Stg::Velocity newVel, bool acceleration)
 {
-	double dt = ((double)mp->GetInterval() / 1e6);
+	//double dt = ((double)mp->GetInterval() / 1e6);
+	double dt = (double)mp->GetWorld()->sim_interval / 1e6;
 
     if(acceleration)
     {
