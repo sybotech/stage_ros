@@ -99,7 +99,6 @@ private:
         Stg::Velocity target_vel; /// target velocity for acceleration control
         ros::Subscriber cmdvel_sub; //one cmd_vel subscriber
         ros::Time base_last_cmd;
-        ros::Time last_acceeration_update;
     };
 
     std::vector<StageRobot*> robotmodels_;
@@ -177,7 +176,7 @@ public:
     // has not yet arrived.
     bool UpdateWorld();
 
-    void CalculateRobotControl(StageRobot * rm, Stg::Velocity newVel, ros::Time stamp);
+    void CalculateRobotControl(StageRobot * rm, Stg::Velocity newVel, double dt);
 
     // Message callback for a MsgBaseVel message, which set velocities.
     void cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist const>& msg);
@@ -568,10 +567,10 @@ template<typename Scalar> Scalar calculateControl(Scalar target, Scalar &current
 	return Scalar(0);
 }
 
-void StageNode::CalculateRobotControl(StageRobot * rm, Stg::Velocity newVel, ros::Time stamp)
+void StageNode::CalculateRobotControl(StageRobot * rm, Stg::Velocity newVel, double dt)
 {
 	Stg::ModelPosition * mp = rm->positionmodel;
-	double dt = (stamp - rm->last_acceeration_update).toSec();
+	//double dt = (stamp - rm->last_acceeration_update).toSec();
     if(use_acceleration_control)
     {
 		Stg::Velocity vel = mp->GetVelocity();
@@ -585,13 +584,13 @@ void StageNode::CalculateRobotControl(StageRobot * rm, Stg::Velocity newVel, ros
 		acceleration[2] = calculateControl<double>(newVel.a, fixedVel.a, dt, fabs(mp->acceleration_bounds[3].min), fabs(mp->acceleration_bounds[3].max));
 		mp->SetVelocity(fixedVel);
 		mp->SetAcceleration(acceleration[0], acceleration[1], acceleration[2]);
-		ROS_DEBUG_NAMED("Acc", "vt=%f v=%f dt=%f", fixedVel.x, newVel.x, dt);
+		ROS_DEBUG_NAMED("Acc", "vt=%f v0=%f v1=%f acc=%f dt=%f", newVel.x, vel.x, fixedVel.x, acceleration[0], dt);
     }
     else
     {
     	mp->SetSpeed(newVel);
     }
-    rm->last_acceeration_update = stamp;
+    //rm->last_acceeration_update = stamp;
 }
 
 void
@@ -606,6 +605,8 @@ StageNode::WorldCallback()
     double deltaT = (sim_time - last_time).toSec();
     if(deltaT == 0.0)
     	ROS_WARN("deltaT is zero");
+
+    double dt = ((double)world->sim_interval / 1e6);
     // We're not allowed to publish clock==0, because it used as a special
     // value in parts of ROS, #4027.
     if(this->sim_time.sec == 0 && this->sim_time.nsec == 0)
@@ -628,7 +629,7 @@ StageNode::WorldCallback()
     {
         StageRobot * robotmodel = this->robotmodels_[r];
 
-        CalculateRobotControl(robotmodel, robotmodel->target_vel, last_time);
+        CalculateRobotControl(robotmodel, robotmodel->target_vel, dt);
         //applyControl(robotmodel, )
 
         //loop on the laser devices for the current robot
