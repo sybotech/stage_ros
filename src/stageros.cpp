@@ -99,6 +99,7 @@ private:
         Stg::Velocity target_vel; /// target velocity for acceleration control
         ros::Subscriber cmdvel_sub; //one cmd_vel subscriber
         ros::Time base_last_cmd;
+        ros::Time last_acceeration_update;
     };
 
     std::vector<StageRobot*> robotmodels_;
@@ -144,7 +145,7 @@ private:
     tf::TransformBroadcaster tf;
 
     // Last time that we received a velocity command
-    ros::Time base_last_cmd;
+    //ros::Time base_last_cmd;
     ros::Duration base_watchdog_timeout;
 
     // Current simulation time
@@ -176,7 +177,7 @@ public:
     // has not yet arrived.
     bool UpdateWorld();
 
-    void CalculateRobotControl(Stg::ModelPosition * mp, Stg::Velocity newVel, float dt);
+    void CalculateRobotControl(StageRobot * rm, Stg::Velocity newVel, ros::Time stamp);
 
     // Message callback for a MsgBaseVel message, which set velocities.
     void cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist const>& msg);
@@ -338,8 +339,6 @@ StageNode::cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist 
 
     robotmodels_[idx]->target_vel = newVel;
     robotmodels_[idx]->base_last_cmd = this->sim_time;
-
-    this->base_last_cmd = this->sim_time;
 }
 
 StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool use_model_names)
@@ -349,7 +348,6 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
 	this->persistent_file = fname;
     this->use_model_names = use_model_names;
     this->sim_time.fromSec(0.0);
-    this->base_last_cmd.fromSec(0.0);
     this->map_publish_period = -1.0;
     this->map_resolution = 0.05;
 
@@ -459,7 +457,6 @@ StageNode::SubscribeModels()
         StageRobot* new_robot = new StageRobot;
         new_robot->positionmodel = this->positionmodels[r];
         new_robot->positionmodel->Subscribe();
-
 
         for (size_t s = 0; s < this->lasermodels.size(); s++)
         {
@@ -571,8 +568,10 @@ template<typename Scalar> Scalar calculateControl(Scalar target, Scalar &current
 	return Scalar(0);
 }
 
-void StageNode::CalculateRobotControl(Stg::ModelPosition * mp, Stg::Velocity newVel, float dt)
+void StageNode::CalculateRobotControl(StageRobot * rm, Stg::Velocity newVel, ros::Time stamp)
 {
+	Stg::ModelPosition * mp = rm->positionmodel;
+	double dt = (stamp - rm->last_acceeration_update).toSec();
     if(use_acceleration_control)
     {
 		Stg::Velocity vel = mp->GetVelocity();
@@ -591,6 +590,7 @@ void StageNode::CalculateRobotControl(Stg::ModelPosition * mp, Stg::Velocity new
     {
     	mp->SetSpeed(newVel);
     }
+    rm->last_acceeration_update = stamp;
 }
 
 void
@@ -603,6 +603,8 @@ StageNode::WorldCallback()
     this->sim_time.fromSec(world->SimTimeNow() / 1e6);
 
     double deltaT = (sim_time - last_time).toSec();
+    if(deltaT == 0.0)
+    	ROS_WARN("deltaT is zero");
     // We're not allowed to publish clock==0, because it used as a special
     // value in parts of ROS, #4027.
     if(this->sim_time.sec == 0 && this->sim_time.nsec == 0)
@@ -623,9 +625,9 @@ StageNode::WorldCallback()
     //loop on the robot models
     for (size_t r = 0; r < this->robotmodels_.size(); ++r)
     {
-        StageRobot const * robotmodel = this->robotmodels_[r];
+        StageRobot * robotmodel = this->robotmodels_[r];
 
-        CalculateRobotControl(robotmodel->positionmodel, robotmodel->target_vel, deltaT);
+        CalculateRobotControl(robotmodel, robotmodel->target_vel, last_time);
         //applyControl(robotmodel, )
 
         //loop on the laser devices for the current robot
