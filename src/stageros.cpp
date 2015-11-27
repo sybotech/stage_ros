@@ -176,7 +176,7 @@ public:
     // has not yet arrived.
     bool UpdateWorld();
 
-    void CalculateRobotControl(Stg::ModelPosition * mp, Stg::Velocity newVel);
+    void CalculateRobotControl(Stg::ModelPosition * mp, Stg::Velocity newVel, float dt);
 
     // Message callback for a MsgBaseVel message, which set velocities.
     void cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist const>& msg);
@@ -571,11 +571,10 @@ template<typename Scalar> Scalar calculateControl(Scalar target, Scalar &current
 	return Scalar(0);
 }
 
-void StageNode::CalculateRobotControl(Stg::ModelPosition * mp, Stg::Velocity newVel)
+void StageNode::CalculateRobotControl(Stg::ModelPosition * mp, Stg::Velocity newVel, float dt)
 {
     if(use_acceleration_control)
     {
-    	float dt = this->world->sim_interval * 0.000001;//1.0 / 30.0;
 		Stg::Velocity vel = mp->GetVelocity();
 		/// This velocity is used to fix 'integration' errors and make
 		/// robot follow target velocity instead of oscilation near it
@@ -599,7 +598,11 @@ StageNode::WorldCallback()
 {
     boost::mutex::scoped_lock lock(msg_lock);
 
+    ros::Time last_time = sim_time;
+
     this->sim_time.fromSec(world->SimTimeNow() / 1e6);
+
+    double deltaT = (sim_time - last_time).toSec();
     // We're not allowed to publish clock==0, because it used as a special
     // value in parts of ROS, #4027.
     if(this->sim_time.sec == 0 && this->sim_time.nsec == 0)
@@ -622,7 +625,7 @@ StageNode::WorldCallback()
     {
         StageRobot const * robotmodel = this->robotmodels_[r];
 
-        CalculateRobotControl(robotmodel->positionmodel, robotmodel->target_vel);
+        CalculateRobotControl(robotmodel->positionmodel, robotmodel->target_vel, deltaT);
         //applyControl(robotmodel, )
 
         //loop on the laser devices for the current robot
