@@ -537,7 +537,7 @@ StageNode::UpdateWorld()
 }
 
 /// Calculates new acceleration
-template<typename Scalar> Scalar calculateControl(Scalar target, Scalar &current, Scalar dt, Scalar accInc, Scalar accDec)
+template<typename Scalar> Scalar calculateControl(Scalar target, Scalar &current, Scalar dt, Scalar accDec, Scalar accInc)
 {
 	if (current >= target)	// deceleration profule
 	{
@@ -580,11 +580,12 @@ void StageNode::CalculateRobotControl(StageRobot * rm, Stg::Velocity newVel, ros
 		Stg::Velocity fixedVel = vel;
 		double acceleration[3] = {0,0,0};
 
-		acceleration[0] = calculateControl<double>(newVel.x, fixedVel.x, dt, fabs(mp->acceleration_bounds[0].min), mp->acceleration_bounds[0].max);
-		acceleration[1] = calculateControl<double>(newVel.y, fixedVel.y, dt, fabs(mp->acceleration_bounds[1].min), mp->acceleration_bounds[1].max);
-		acceleration[2] = calculateControl<double>(newVel.a, fixedVel.a, dt, fabs(mp->acceleration_bounds[3].min), mp->acceleration_bounds[3].max);
+		acceleration[0] = calculateControl<double>(newVel.x, fixedVel.x, dt, fabs(mp->acceleration_bounds[0].min), fabs(mp->acceleration_bounds[0].max));
+		acceleration[1] = calculateControl<double>(newVel.y, fixedVel.y, dt, fabs(mp->acceleration_bounds[1].min), fabs(mp->acceleration_bounds[1].max));
+		acceleration[2] = calculateControl<double>(newVel.a, fixedVel.a, dt, fabs(mp->acceleration_bounds[3].min), fabs(mp->acceleration_bounds[3].max));
 		mp->SetVelocity(fixedVel);
 		mp->SetAcceleration(acceleration[0], acceleration[1], acceleration[2]);
+		ROS_DEBUG_NAMED("Acc", "vt=%f v=%f dt=%f", fixedVel.x, newVel.x, dt);
     }
     else
     {
@@ -978,6 +979,8 @@ main(int argc, char** argv)
 
     double rate = 10;
     private_nh.param<double>("rate", rate, 10.0);
+
+    ROS_INFO("Specified update rate: %f", rate);
 
     // New in Stage 4.1.1: must Start() the world.
     sn.world->Start();
