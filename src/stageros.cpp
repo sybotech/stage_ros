@@ -49,8 +49,8 @@
 #include <geometry_msgs/Twist.h>
 #include <nav_msgs/OccupancyGrid.h>
 #include <rosgraph_msgs/Clock.h>
-
 #include <std_srvs/Empty.h>
+#include <nav_msgs/GetMap.h>
 
 #include "tf/transform_broadcaster.h"
 
@@ -112,6 +112,7 @@ private:
     ros::Publisher clock_pub_;
     
     ros::Publisher map_pub_;
+    ros::ServiceServer map_srv_;
     ros::Timer map_timer_;
 
     bool isDepthCanonical;
@@ -183,7 +184,11 @@ public:
     // Message callback for a MsgBaseVel message, which set velocities.
     void cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist const>& msg);
 
+    bool onMapRequest(nav_msgs::GetMap::Request & request, nav_msgs::GetMap::Response & response);
+
     void mapTimer(const ros::TimerEvent & evt);
+
+    bool generateMap(nav_msgs::OccupancyGrid & map);
 
     // Service callback for soft reset
     bool cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Response& response);
@@ -278,14 +283,19 @@ StageNode::cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Resp
   return true;
 }
 
-void
-StageNode::mapTimer(const ros::TimerEvent & evt)
+bool StageNode::onMapRequest(nav_msgs::GetMap::Request & request, nav_msgs::GetMap::Response & response)
 {
+	ROS_INFO("Got request for map contents");
+	return generateMap(response.map);
+}
 
-	map_cache.header.frame_id = this->root_frame_id;
-	map_cache.header.stamp = this->sim_time;
-	map_cache.info.resolution = map_resolution;
-	map_cache.info.origin.orientation.w = 1.0;
+bool
+StageNode::generateMap(nav_msgs::OccupancyGrid & map)
+{
+	map.header.frame_id = this->root_frame_id;
+	map.header.stamp = this->sim_time;
+	map.info.resolution = map_resolution;
+	map.info.origin.orientation.w = 1.0;
 
 
 	Stg::Model * floor = world->GetModel(this->map_model_name);
@@ -294,39 +304,46 @@ StageNode::mapTimer(const ros::TimerEvent & evt)
 	if(!floor)
 		floor=world->GetGround();*/
 
-	if(floor)
+	if(!floor)
+		return false;
+
+	Stg::Geom geom = floor->GetGeom();
+
+	int width = ceilf(geom.size.x / map_resolution);
+	int height = ceilf(geom.size.y / map_resolution);
+
+	if(width * height == 0)
 	{
-		Stg::Geom geom = floor->GetGeom();
-
-		int width = ceilf(geom.size.x / map_resolution);
-		int height = ceilf(geom.size.y / map_resolution);
-
-		if(width * height == 0)
-		{
-			ROS_ERROR("Will not publish map with zero size");
-			return;
-		}
-
-		map_cache.info.width = width;
-		map_cache.info.height = height;
-		map_cache.data.resize(width * height);
-		unsigned char * data = reinterpret_cast<unsigned char*>(&map_cache.data.front());
-
-		/// Get floor data
-		floor->Rasterize(data, width, height, map_resolution, map_resolution);
-
-		Stg::Pose pose = floor->GetGlobalPose();
-		//Stg::bounds3d_t bounds = floor->blockgroup.BoundingBox();
-
-		map_cache.info.origin.position.x = pose.x - geom.size.x*0.5;
-		map_cache.info.origin.position.y = pose.y - geom.size.y*0.5;
-		/// Fixing 'colors' to match ROS nav_msgs::OccupancyGrid notation
-		for(int i = 0; i < width * height; i++)
-			if(data[i] > 0)
-				data[i] = 100;
-
-		this->map_pub_.publish(map_cache);
+		ROS_ERROR("Will not publish map with zero size");
+		return false;
 	}
+
+	map.info.width = width;
+	map.info.height = height;
+	map.data.resize(width * height);
+	unsigned char * data = reinterpret_cast<unsigned char*>(&map.data.front());
+
+	/// Get floor data
+	floor->Rasterize(data, width, height, map_resolution, map_resolution);
+
+	Stg::Pose pose = floor->GetGlobalPose();
+	//Stg::bounds3d_t bounds = floor->blockgroup.BoundingBox();
+
+	map.info.origin.position.x = pose.x - geom.size.x*0.5;
+	map.info.origin.position.y = pose.y - geom.size.y*0.5;
+	/// Fixing 'colors' to match ROS nav_msgs::OccupancyGrid notation
+	for(int i = 0; i < width * height; i++)
+		if(data[i] > 0)
+			data[i] = 100;
+
+	return true;
+}
+
+void
+StageNode::mapTimer(const ros::TimerEvent & evt)
+{
+	if(this->generateMap(map_cache))
+		this->map_pub_.publish(map_cache);
 }
 
 void
@@ -450,6 +467,8 @@ StageNode::SubscribeModels()
     	{
 			map_pub_ = n_.advertise<nav_msgs::OccupancyGrid>("world",5);
 			map_timer_ = n_.createTimer(ros::Duration(map_publish_period), &StageNode::mapTimer, this);
+
+			map_srv_ = n_.advertiseService("dynamic_map", &StageNode::onMapRequest, this);
     	}
     }
 
