@@ -46,6 +46,8 @@
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/CameraInfo.h>
 #include <nav_msgs/Odometry.h>
+#include <nav_msgs/OccupancyGrid.h>
+#include <nav_msgs/GetMap.h>
 #include <geometry_msgs/Twist.h>
 #include <rosgraph_msgs/Clock.h>
 
@@ -105,7 +107,12 @@ private:
     ros::ServiceServer reset_srv_;
   
     ros::Publisher clock_pub_;
-    
+    ros::Publisher map_pub_;
+    ros::Publisher map_info_pub_;
+    ros::ServiceServer map_srv_;
+
+    ros::Timer map_publish_timer_;
+
     bool isDepthCanonical;
     bool use_model_names;
 
@@ -139,7 +146,15 @@ private:
     ros::Time base_last_globalpos_time;
     // Last published global pose of each robot
     std::vector<Stg::Pose> base_last_globalpos;
+    // Period for map publishing
+    double map_publish_period;
 
+    // Contains cached map info
+    nav_msgs::OccupancyGrid cached_map_;
+    // Callback for map requests
+    bool cb_getmap_srv(nav_msgs::GetMap::Request &req, nav_msgs::GetMap::Response &res);
+    // Timer event for map updates
+    void onMapUpdate(const ros::TimerEvent& event);
 public:
     // Constructor; stage itself needs argc/argv.  fname is the .world file
     // that stage should load.
@@ -168,6 +183,10 @@ public:
     Stg::World* world;
 };
 
+class WorldPrivateAccessor : public World
+{
+
+};
 // since stageros is single-threaded, this is OK. revisit if that changes!
 const char *
 StageNode::mapName(const char *name, size_t robotID, Stg::Model* mod) const
@@ -280,6 +299,8 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
     if(!localn.getParam("is_depth_canonical", isDepthCanonical))
         isDepthCanonical = true;
 
+    if(!localn.getParam("map_publish_period", this->map_publish_period))
+    	map_publish_period = -1.0;
 
     // We'll check the existence of the world file, because libstage doesn't
     // expose its failure to open it.  Could go further with checks (e.g., is
@@ -310,6 +331,8 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
     this->world->AddUpdateCallback((Stg::world_callback_t)s_update, this);
 
     this->world->ForEachDescendant((Stg::model_callback_t)ghfunc, this);
+
+    this->world->
 }
 
 
@@ -387,6 +410,15 @@ StageNode::SubscribeModels()
     // advertising reset service
     reset_srv_ = n_.advertiseService("reset_positions", &StageNode::cb_reset_srv, this);
 
+    // Advertising map topics only if map_publish_period is specified
+    if(map_publish_period > 0)
+    {
+		this->map_pub_ = n_.advertise<nav_msgs::OccupancyGrid>("/actual_map", 10);
+		this->map_info_pub_ = n_.advertise<nav_msgs::MapMetaData>("/actual_map_info", 10);
+		this->map_srv_ = n_.advertiseService("dynamic_map", &StageNode:;cb_getmap_srv, this);
+		this->map_publish_timer_ = n_.createTimer(ros::Duration(this->map_publish_period), &StageNode::onMapUpdate);
+    }
+
     return(0);
 }
 
@@ -400,6 +432,20 @@ bool
 StageNode::UpdateWorld()
 {
     return this->world->UpdateAll();
+}
+
+bool
+StageNode::cb_getmap_srv(nav_msgs::GetMap::Request &req, nav_msgs::GetMap::Response &res)
+{
+	res.map = this->cached_map_;
+	return true;
+}
+
+void
+StageNode::onMapUpdate(const ros::TimerEvent & event)
+{
+	map_pub_.publish(this->cached_map_);
+	map_info_pub_.publish(this->cached_map_.info);
 }
 
 void
