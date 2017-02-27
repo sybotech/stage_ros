@@ -49,9 +49,10 @@
 #include <nav_msgs/OccupancyGrid.h>
 #include <nav_msgs/GetMap.h>
 #include <geometry_msgs/Twist.h>
+#include <nav_msgs/OccupancyGrid.h>
 #include <rosgraph_msgs/Clock.h>
-
 #include <std_srvs/Empty.h>
+#include <nav_msgs/GetMap.h>
 
 #include "tf/transform_broadcaster.h"
 
@@ -97,10 +98,14 @@ private:
         std::vector<ros::Publisher> camera_pubs; //multiple cameras
         std::vector<ros::Publisher> laser_pubs; //multiple lasers
 
+        Stg::Velocity target_vel; /// target velocity for acceleration control
         ros::Subscriber cmdvel_sub; //one cmd_vel subscriber
+        ros::Time base_last_cmd;
+
+        static int cb_model(Stg::ModelPosition * mod, StageRobot * sr);
     };
 
-    std::vector<StageRobot const *> robotmodels_;
+    std::vector<StageRobot*> robotmodels_;
 
     // Used to remember initial poses for soft reset
     std::vector<Stg::Pose> initial_poses;
@@ -113,8 +118,17 @@ private:
 
     ros::Timer map_publish_timer_;
 
+
     bool isDepthCanonical;
     bool use_model_names;
+    bool use_acceleration_control;
+    bool use_common_root;
+
+    double map_resolution;					//< resolution for published map
+    nav_msgs::OccupancyGrid map_cache;		//< cached grid map
+    std::string map_model_name;				//< model name to be used as raster map source
+
+    std::string root_frame_id;
 
     // A helper function that is executed for each stage model.  We use it
     // to search for models of interest.
@@ -136,7 +150,7 @@ private:
     tf::TransformBroadcaster tf;
 
     // Last time that we received a velocity command
-    ros::Time base_last_cmd;
+    //ros::Time base_last_cmd;
     ros::Duration base_watchdog_timeout;
 
     // Current simulation time
@@ -146,6 +160,7 @@ private:
     ros::Time base_last_globalpos_time;
     // Last published global pose of each robot
     std::vector<Stg::Pose> base_last_globalpos;
+
     // Period for map publishing
     double map_publish_period;
 
@@ -155,6 +170,10 @@ private:
     bool cb_getmap_srv(nav_msgs::GetMap::Request &req, nav_msgs::GetMap::Response &res);
     // Timer event for map updates
     void onMapUpdate(const ros::TimerEvent& event);
+
+    // Path for persistent world file. It will be saved when node exits
+    std::string persistent_file;
+    bool persistent_world;
 public:
     // Constructor; stage itself needs argc/argv.  fname is the .world file
     // that stage should load.
@@ -173,8 +192,16 @@ public:
     // has not yet arrived.
     bool UpdateWorld();
 
+    static void CalculateRobotControl(Stg::ModelPosition* mp, Stg::Velocity newVel, bool acc);
+
     // Message callback for a MsgBaseVel message, which set velocities.
     void cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist const>& msg);
+
+    bool onMapRequest(nav_msgs::GetMap::Request & request, nav_msgs::GetMap::Response & response);
+
+    void mapTimer(const ros::TimerEvent & evt);
+
+    bool generateMap(nav_msgs::OccupancyGrid & map);
 
     // Service callback for soft reset
     bool cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Response& response);
@@ -269,23 +296,92 @@ StageNode::cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Resp
   return true;
 }
 
+bool StageNode::onMapRequest(nav_msgs::GetMap::Request & request, nav_msgs::GetMap::Response & response)
+{
+	ROS_INFO("Got request for map contents");
+	return generateMap(response.map);
+}
 
+bool
+StageNode::generateMap(nav_msgs::OccupancyGrid & map)
+{
+	map.header.frame_id = this->root_frame_id;
+	map.header.stamp = this->sim_time;
+	map.info.resolution = map_resolution;
+	map.info.origin.orientation.w = 1.0;
+
+
+	Stg::Model * floor = world->GetModel(this->map_model_name);
+
+	/*
+	if(!floor)
+		floor=world->GetGround();*/
+
+	if(!floor)
+		return false;
+
+	Stg::Geom geom = floor->GetGeom();
+
+	int width = ceilf(geom.size.x / map_resolution);
+	int height = ceilf(geom.size.y / map_resolution);
+
+	if(width * height == 0)
+	{
+		ROS_ERROR("Will not publish map with zero size");
+		return false;
+	}
+
+	map.info.width = width;
+	map.info.height = height;
+	map.data.resize(width * height);
+	unsigned char * data = reinterpret_cast<unsigned char*>(&map.data.front());
+
+	/// Get floor data
+	floor->Rasterize(data, width, height, map_resolution, map_resolution);
+
+	Stg::Pose pose = floor->GetGlobalPose();
+	//Stg::bounds3d_t bounds = floor->blockgroup.BoundingBox();
+
+	map.info.origin.position.x = pose.x - geom.size.x*0.5;
+	map.info.origin.position.y = pose.y - geom.size.y*0.5;
+	/// Fixing 'colors' to match ROS nav_msgs::OccupancyGrid notation
+	for(int i = 0; i < width * height; i++)
+		if(data[i] > 0)
+			data[i] = 100;
+
+	return true;
+}
+
+void
+StageNode::mapTimer(const ros::TimerEvent & evt)
+{
+	if(this->generateMap(map_cache))
+		this->map_pub_.publish(map_cache);
+}
 
 void
 StageNode::cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist const>& msg)
 {
     boost::mutex::scoped_lock lock(msg_lock);
-    this->positionmodels[idx]->SetSpeed(msg->linear.x,
-                                        msg->linear.y,
-                                        msg->angular.z);
-    this->base_last_cmd = this->sim_time;
+    Stg::ModelPosition * mp = this->positionmodels[idx];
+    assert(mp != NULL);
+
+    Stg::Velocity newVel(msg->linear.x, msg->linear.y, 0.0, msg->angular.z);
+
+    robotmodels_[idx]->target_vel = newVel;
+    robotmodels_[idx]->base_last_cmd = this->sim_time;
 }
 
 StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool use_model_names)
 {
+	this->use_acceleration_control = false;
+	this->persistent_world = false;
+	this->persistent_file = fname;
     this->use_model_names = use_model_names;
     this->sim_time.fromSec(0.0);
-    this->base_last_cmd.fromSec(0.0);
+    this->map_publish_period = -1.0;
+    this->map_resolution = 0.05;
+
     double t;
     ros::NodeHandle localn("~");
     if(!localn.getParam("base_watchdog_timeout", t))
@@ -295,8 +391,17 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
     if(!localn.getParam("is_depth_canonical", isDepthCanonical))
         isDepthCanonical = true;
 
-    if(!localn.getParam("map_publish_period", this->map_publish_period))
-    	map_publish_period = -1.0;
+    localn.param<std::string>("persistent_file", this->persistent_file, "");
+    localn.param<bool>("common_root", use_common_root, false);
+    localn.param<bool>("control_acceleration", this->use_acceleration_control, false);
+    localn.param<std::string>("root_frame_id", root_frame_id, "map");
+
+    localn.param<double>("map_publish_period", map_publish_period, -1.0);
+    localn.param<double>("map_resolution", map_resolution, 0.05);
+    localn.param<std::string>("map_model_name", map_model_name, "ground");
+
+    if(!persistent_file.empty())
+    	persistent_world = true;
 
     // We'll check the existence of the world file, because libstage doesn't
     // expose its failure to open it.  Could go further with checks (e.g., is
@@ -320,15 +425,39 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
     // startup on some systems.
     // As of Stage 4.1.1, this update call causes a hang on start.
     //this->UpdateWorld();
-    this->world->Load(fname);
 
-    // We add our callback here, after the Update, so avoid our callback
-    // being invoked before we're ready.
-    this->world->AddUpdateCallback((Stg::world_callback_t)s_update, this);
+    /// Try to load a scene from persistent file
+    bool loaded = false;
+    if(persistent_world)
+    {
+    	if(this->world->Load(this->persistent_file))
+    	{
+    		ROS_INFO("Loaded world from persistent file %s", persistent_file.c_str());
+    		loaded = true;
+    	}
+    	else
+    		ROS_FATAL("Failed to load world from persistent file %s. Loading from source file", persistent_file.c_str());
+    }
 
-    this->world->ForEachDescendant((Stg::model_callback_t)ghfunc, this);
+    if(!loaded)
+    {
+    	if(this->world->Load(fname))
+    		loaded = true;
+    	else
+    	{
+    		ROS_FATAL("Failed to laod world from %s", fname);
+    	}
+    }
+
+    if(loaded)
+    {
+		// We add our callback here, after the Update, so avoid our callback
+		// being invoked before we're ready.
+		this->world->AddUpdateCallback((Stg::world_callback_t)s_update, this);
+
+		this->world->ForEachDescendant((Stg::model_callback_t)ghfunc, this);
+    }
 }
-
 
 // Subscribe to models of interest.  Currently, we find and subscribe
 // to the first 'laser' model and the first 'position' model.  Returns
@@ -341,12 +470,27 @@ StageNode::SubscribeModels()
 {
     n_.setParam("/use_sim_time", true);
 
+    if(this->map_publish_period > 0.0)
+    {
+    	if(this->map_model_name.empty())
+    	{
+    		ROS_ERROR("No 'map_model_name' is specified, no map will be published");
+    	}
+    	else
+    	{
+			map_pub_ = n_.advertise<nav_msgs::OccupancyGrid>("world",5);
+			map_publish_timer_ = n_.createTimer(ros::Duration(map_publish_period), &StageNode::mapTimer, this);
+
+			map_srv_ = n_.advertiseService("dynamic_map", &StageNode::onMapRequest, this);
+    	}
+    }
+
     for (size_t r = 0; r < this->positionmodels.size(); r++)
     {
         StageRobot* new_robot = new StageRobot;
         new_robot->positionmodel = this->positionmodels[r];
         new_robot->positionmodel->Subscribe();
-
+        new_robot->positionmodel->AddCallback(Stg::Model::CB_UPDATE, (Stg::model_callback_t)&StageRobot::cb_model, new_robot);
 
         for (size_t s = 0; s < this->lasermodels.size(); s++)
         {
@@ -418,8 +562,15 @@ StageNode::SubscribeModels()
 
 StageNode::~StageNode()
 {    
-    for (std::vector<StageRobot const*>::iterator r = this->robotmodels_.begin(); r != this->robotmodels_.end(); ++r)
+    for (std::vector<StageRobot*>::iterator r = this->robotmodels_.begin(); r != this->robotmodels_.end(); ++r)
         delete *r;
+
+    /// Save world before exit
+    if(persistent_world)
+    {
+    	ROS_INFO("Saving world state to %s", persistent_file.c_str());
+    	world->Save(this->persistent_file.c_str());
+    }
 }
 
 bool
@@ -427,6 +578,7 @@ StageNode::UpdateWorld()
 {
     return this->world->UpdateAll();
 }
+
 
 bool
 StageNode::cb_getmap_srv(nav_msgs::GetMap::Request &req, nav_msgs::GetMap::Response &res)
@@ -442,10 +594,76 @@ StageNode::onMapUpdate(const ros::TimerEvent & event)
 	map_info_pub_.publish(this->cached_map_.info);
 }
 
+/// Calculates new acceleration
+template<typename Scalar> Scalar calculateControl(Scalar target, Scalar &current, Scalar dt, Scalar accDec, Scalar accInc)
+{
+	if (current >= target)	// deceleration profule
+	{
+		if (current - target < accDec*dt)
+		{
+			current = target;
+			return Scalar(0);//(current-target)/dt;
+		}
+		else
+		{
+			return -accDec;
+		}
+			//result = current - delta;
+	}
+	else	// acceleration profile
+	{
+		if (target - current < accInc*dt)
+		{
+			current = target;
+			return Scalar(0);//(target-current)/dt;//result = target;
+		}
+		else
+		{
+			return accInc;//result = current + delta;
+		}
+	}
+	//return result;
+	return Scalar(0);
+}
+
+int StageNode::StageRobot::cb_model(Stg::ModelPosition * mod, StageRobot * sr)
+{
+	StageNode::CalculateRobotControl(sr->positionmodel, sr->target_vel, true);
+	return 0;
+}
+
+void StageNode::CalculateRobotControl(Stg::ModelPosition* mp, Stg::Velocity newVel, bool acceleration)
+{
+	//double dt = ((double)mp->GetInterval() / 1e6);
+	double dt = (double)mp->GetWorld()->sim_interval / 1e6;
+
+    if(acceleration)
+    {
+		Stg::Velocity vel = mp->GetVelocity();
+		/// This velocity is used to fix 'integration' errors and make
+		/// robot follow target velocity instead of oscilation near it
+		Stg::Velocity fixedVel = vel;
+		double acceleration[3] = {0,0,0};
+
+		acceleration[0] = calculateControl<double>(newVel.x, fixedVel.x, dt, fabs(mp->acceleration_bounds[0].min), fabs(mp->acceleration_bounds[0].max));
+		acceleration[1] = calculateControl<double>(newVel.y, fixedVel.y, dt, fabs(mp->acceleration_bounds[1].min), fabs(mp->acceleration_bounds[1].max));
+		acceleration[2] = calculateControl<double>(newVel.a, fixedVel.a, dt, fabs(mp->acceleration_bounds[3].min), fabs(mp->acceleration_bounds[3].max));
+		mp->SetVelocity(fixedVel);
+		mp->SetAcceleration(acceleration[0], acceleration[1], acceleration[2]);
+		ROS_DEBUG_NAMED("Acc", "Model %s: vt=%f v0=%f v1=%f acc=%f dt=%f", mp->Token(), newVel.x, vel.x, fixedVel.x, acceleration[0], dt);
+    }
+    else
+    {
+    	mp->SetSpeed(newVel);
+    }
+}
+
 void
 StageNode::WorldCallback()
 {
     boost::mutex::scoped_lock lock(msg_lock);
+
+    ros::Time last_time = sim_time;
 
     this->sim_time.fromSec(world->SimTimeNow() / 1e6);
     // We're not allowed to publish clock==0, because it used as a special
@@ -457,17 +675,19 @@ StageNode::WorldCallback()
     }
 
     // TODO make this only affect one robot if necessary
+    /*
     if((this->base_watchdog_timeout.toSec() > 0.0) &&
             ((this->sim_time - this->base_last_cmd) >= this->base_watchdog_timeout))
     {
         for (size_t r = 0; r < this->positionmodels.size(); r++)
             this->positionmodels[r]->SetSpeed(0.0, 0.0, 0.0);
-    }
+    }*/
 
     //loop on the robot models
     for (size_t r = 0; r < this->robotmodels_.size(); ++r)
     {
-        StageRobot const * robotmodel = this->robotmodels_[r];
+        StageRobot * robotmodel = this->robotmodels_[r];
+        //CalculateRobotControl(robotmodel->positionmodel, robotmodel->target_vel);
 
         //loop on the laser devices for the current robot
         for (size_t s = 0; s < robotmodel->lasermodels.size(); ++s)
@@ -546,8 +766,10 @@ StageNode::WorldCallback()
         //@todo Publish stall on a separate topic when one becomes available
         //this->odomMsgs[r].stall = this->positionmodels[r]->Stall();
         //
-        odom_msg.header.frame_id = mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
+        odom_msg.header.frame_id = use_common_root ?
+        		this->root_frame_id : mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
         odom_msg.header.stamp = sim_time;
+        odom_msg.child_frame_id = mapName("base_footprint", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
 
         robotmodel->odom_pub.publish(odom_msg);
 
@@ -558,12 +780,22 @@ StageNode::WorldCallback()
         tf.sendTransform(tf::StampedTransform(txOdom, sim_time,
                                               mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel)),
                                               mapName("base_footprint", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
+        if(use_common_root)
+        {
+        	tf::Quaternion odomQ;
+			tf::quaternionMsgToTF(odom_msg.pose.pose.orientation, odomQ);
+			tf::Transform txOdom = tf::Transform::getIdentity();
+			tf.sendTransform(tf::StampedTransform(txOdom, sim_time,
+												  root_frame_id,
+												  mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel))));
+        }
 
         // Also publish the ground truth pose and velocity
         Stg::Pose gpose = robotmodel->positionmodel->GetGlobalPose();
         tf::Quaternion q_gpose;
         q_gpose.setRPY(0.0, 0.0, gpose.a);
         tf::Transform gt(q_gpose, tf::Point(gpose.x, gpose.y, 0.0));
+        /// Does anybody use it?
         // Velocity is 0 by default and will be set only if there is previous pose and time delta>0
         Stg::Velocity gvel(0,0,0,0);
         if (this->base_last_globalpos.size()>r){
@@ -595,6 +827,8 @@ StageNode::WorldCallback()
 
         ground_truth_msg.header.frame_id = mapName("odom", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
         ground_truth_msg.header.stamp = sim_time;
+
+        ground_truth_msg.child_frame_id = mapName("base_footprint", r, static_cast<Stg::Model*>(robotmodel->positionmodel));
 
         robotmodel->ground_truth_pub.publish(ground_truth_msg);
 
@@ -799,12 +1033,19 @@ main(int argc, char** argv)
 
     boost::thread t = boost::thread(boost::bind(&ros::spin));
 
+    ros::NodeHandle private_nh("~");
+
+    double rate = 10;
+    private_nh.param<double>("rate", rate, 10.0);
+
+    ROS_INFO("Specified update rate: %f", rate);
+
     // New in Stage 4.1.1: must Start() the world.
     sn.world->Start();
 
     // TODO: get rid of this fixed-duration sleep, using some Stage builtin
     // PauseUntilNextUpdate() functionality.
-    ros::WallRate r(10.0);
+    ros::WallRate r(rate);
     while(ros::ok() && !sn.world->TestQuit())
     {
         if(gui)
@@ -815,8 +1056,8 @@ main(int argc, char** argv)
             r.sleep();
         }
     }
+
     t.join();
 
-    exit(0);
+    //exit(0);
 }
-
