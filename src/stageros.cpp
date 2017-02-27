@@ -183,10 +183,6 @@ public:
     Stg::World* world;
 };
 
-class WorldPrivateAccessor : public World
-{
-
-};
 // since stageros is single-threaded, this is OK. revisit if that changes!
 const char *
 StageNode::mapName(const char *name, size_t robotID, Stg::Model* mod) const
@@ -331,8 +327,6 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
     this->world->AddUpdateCallback((Stg::world_callback_t)s_update, this);
 
     this->world->ForEachDescendant((Stg::model_callback_t)ghfunc, this);
-
-    this->world->
 }
 
 
@@ -413,10 +407,10 @@ StageNode::SubscribeModels()
     // Advertising map topics only if map_publish_period is specified
     if(map_publish_period > 0)
     {
-		this->map_pub_ = n_.advertise<nav_msgs::OccupancyGrid>("/actual_map", 10);
-		this->map_info_pub_ = n_.advertise<nav_msgs::MapMetaData>("/actual_map_info", 10);
-		this->map_srv_ = n_.advertiseService("dynamic_map", &StageNode:;cb_getmap_srv, this);
-		this->map_publish_timer_ = n_.createTimer(ros::Duration(this->map_publish_period), &StageNode::onMapUpdate);
+		this->map_pub_ = n_.advertise<nav_msgs::OccupancyGrid>("map", 10);
+		this->map_info_pub_ = n_.advertise<nav_msgs::MapMetaData>("map_info", 10);
+		this->map_srv_ = n_.advertiseService("dynamic_map", &StageNode::cb_getmap_srv, this);
+		this->map_publish_timer_ = n_.createTimer(ros::Duration(this->map_publish_period), &StageNode::onMapUpdate, this);
     }
 
     return(0);
