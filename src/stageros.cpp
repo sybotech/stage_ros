@@ -118,14 +118,12 @@ private:
 
     ros::Timer map_publish_timer_;
 
-
     bool isDepthCanonical;
     bool use_model_names;
     bool use_acceleration_control;
     bool use_common_root;
 
     double map_resolution;					//< resolution for published map
-    nav_msgs::OccupancyGrid map_cache;		//< cached grid map
     std::string map_model_name;				//< model name to be used as raster map source
 
     std::string root_frame_id;
@@ -169,7 +167,7 @@ private:
     // Callback for map requests
     bool cb_getmap_srv(nav_msgs::GetMap::Request &req, nav_msgs::GetMap::Response &res);
     // Timer event for map updates
-    void onMapUpdate(const ros::TimerEvent& event);
+    void onMapPublish(const ros::TimerEvent& event);
 
     // Path for persistent world file. It will be saved when node exits
     std::string persistent_file;
@@ -196,10 +194,6 @@ public:
 
     // Message callback for a MsgBaseVel message, which set velocities.
     void cmdvelReceived(int idx, const boost::shared_ptr<geometry_msgs::Twist const>& msg);
-
-    bool onMapRequest(nav_msgs::GetMap::Request & request, nav_msgs::GetMap::Response & response);
-
-    void mapTimer(const ros::TimerEvent & evt);
 
     bool generateMap(nav_msgs::OccupancyGrid & map);
 
@@ -296,12 +290,6 @@ StageNode::cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Resp
   return true;
 }
 
-bool StageNode::onMapRequest(nav_msgs::GetMap::Request & request, nav_msgs::GetMap::Response & response)
-{
-	ROS_INFO("Got request for map contents");
-	return generateMap(response.map);
-}
-
 bool
 StageNode::generateMap(nav_msgs::OccupancyGrid & map)
 {
@@ -318,7 +306,10 @@ StageNode::generateMap(nav_msgs::OccupancyGrid & map)
 		floor=world->GetGround();*/
 
 	if(!floor)
+	{
+		ROS_ERROR("No floor model is found");
 		return false;
+	}
 
 	Stg::Geom geom = floor->GetGeom();
 
@@ -350,13 +341,6 @@ StageNode::generateMap(nav_msgs::OccupancyGrid & map)
 			data[i] = 100;
 
 	return true;
-}
-
-void
-StageNode::mapTimer(const ros::TimerEvent & evt)
-{
-	if(this->generateMap(map_cache))
-		this->map_pub_.publish(map_cache);
 }
 
 void
@@ -470,21 +454,6 @@ StageNode::SubscribeModels()
 {
     n_.setParam("/use_sim_time", true);
 
-    if(this->map_publish_period > 0.0)
-    {
-    	if(this->map_model_name.empty())
-    	{
-    		ROS_ERROR("No 'map_model_name' is specified, no map will be published");
-    	}
-    	else
-    	{
-			map_pub_ = n_.advertise<nav_msgs::OccupancyGrid>("world",5);
-			map_publish_timer_ = n_.createTimer(ros::Duration(map_publish_period), &StageNode::mapTimer, this);
-
-			map_srv_ = n_.advertiseService("dynamic_map", &StageNode::onMapRequest, this);
-    	}
-    }
-
     for (size_t r = 0; r < this->positionmodels.size(); r++)
     {
         StageRobot* new_robot = new StageRobot;
@@ -551,10 +520,18 @@ StageNode::SubscribeModels()
     // Advertising map topics only if map_publish_period is specified
     if(map_publish_period > 0)
     {
-		this->map_pub_ = n_.advertise<nav_msgs::OccupancyGrid>("map", 10);
-		this->map_info_pub_ = n_.advertise<nav_msgs::MapMetaData>("map_info", 10);
-		this->map_srv_ = n_.advertiseService("dynamic_map", &StageNode::cb_getmap_srv, this);
-		this->map_publish_timer_ = n_.createTimer(ros::Duration(this->map_publish_period), &StageNode::onMapUpdate, this);
+    	if(this->map_model_name.empty())
+    	{
+    		ROS_ERROR("No 'map_model_name' is specified, no map will be published");
+    	}
+    	else
+    	{
+			this->map_pub_ = n_.advertise<nav_msgs::OccupancyGrid>("map", 10);
+			this->map_info_pub_ = n_.advertise<nav_msgs::MapMetaData>("map_info", 10);
+			this->map_srv_ = n_.advertiseService("dynamic_map", &StageNode::cb_getmap_srv, this);
+			this->map_publish_timer_ = n_.createTimer(ros::Duration(this->map_publish_period), &StageNode::onMapPublish, this);
+    	}
+
     }
 
     return(0);
@@ -588,10 +565,13 @@ StageNode::cb_getmap_srv(nav_msgs::GetMap::Request &req, nav_msgs::GetMap::Respo
 }
 
 void
-StageNode::onMapUpdate(const ros::TimerEvent & event)
+StageNode::onMapPublish(const ros::TimerEvent & event)
 {
-	map_pub_.publish(this->cached_map_);
-	map_info_pub_.publish(this->cached_map_.info);
+	if(this->generateMap(cached_map_))
+	{
+		map_pub_.publish(this->cached_map_);
+		map_info_pub_.publish(this->cached_map_.info);
+	}
 }
 
 /// Calculates new acceleration
@@ -687,7 +667,6 @@ StageNode::WorldCallback()
     for (size_t r = 0; r < this->robotmodels_.size(); ++r)
     {
         StageRobot * robotmodel = this->robotmodels_[r];
-        //CalculateRobotControl(robotmodel->positionmodel, robotmodel->target_vel);
 
         //loop on the laser devices for the current robot
         for (size_t s = 0; s < robotmodel->lasermodels.size(); ++s)
