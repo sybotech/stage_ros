@@ -24,6 +24,10 @@ include_directories(
 
 catkin_package()
 
+if(STAGE_USE_GUI)
+	add_definitions(-DHAS_STAGE_GUI)
+endif(STAGE_USE_GUI)
+
 # Declare a cpp executable
 add_executable(stageros src/stageros.cpp)
 set(${PROJECT_NAME}_extra_libs "")

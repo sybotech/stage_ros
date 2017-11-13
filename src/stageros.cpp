@@ -399,11 +399,14 @@ StageNode::StageNode(int argc, char** argv, bool gui, const char* fname, bool us
 
     // initialize libstage
     Stg::Init( &argc, &argv );
-
+#ifdef HAS_STAGE_GUI
     if(gui)
         this->world = new Stg::WorldGui(600, 400, "Stage (ROS)");
     else
+#endif
+    {
         this->world = new Stg::World();
+    }
 
     // Apparently an Update is needed before the Load to avoid crashes on
     // startup on some systems.
@@ -487,10 +490,21 @@ StageNode::SubscribeModels()
 
         for (size_t s = 0;  s < new_robot->lasermodels.size(); ++s)
         {
+        		const Stg::ModelRanger * lm = new_robot->lasermodels[s];
+        		std::string topic_name = mapName(BASE_SCAN, r, static_cast<Stg::Model*>(new_robot->positionmodel));
+        		if(lm->TokenStr() != "")
+        		{
+        			topic_name += "_" + lm->TokenStr();
+        		}
+
+        		/*
             if (new_robot->lasermodels.size() == 1)
-                new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(mapName(BASE_SCAN, r, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
+
             else
                 new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(mapName(BASE_SCAN, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
+        		*/
+        		ROS_INFO("Will publish laser sensor #%d to topic name=%s", (int)s, topic_name.c_str());
+        		new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(topic_name, 10));
 
         }
 
@@ -1027,9 +1041,11 @@ main(int argc, char** argv)
     ros::WallRate r(rate);
     while(ros::ok() && !sn.world->TestQuit())
     {
+#ifdef HAS_STAGE_GUI
         if(gui)
             Fl::wait(r.expectedCycleTime().toSec());
         else
+#endif
         {
             sn.UpdateWorld();
             r.sleep();
