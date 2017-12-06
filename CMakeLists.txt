@@ -29,7 +29,7 @@ if(STAGE_USE_GUI)
 endif(STAGE_USE_GUI)
 
 # Declare a cpp executable
-add_executable(stageros src/stageros.cpp)
+add_executable(stageros src/robot.cpp src/stageros.cpp)
 set(${PROJECT_NAME}_extra_libs "")
 if(UNIX AND NOT APPLE)
   set(${PROJECT_NAME}_extra_libs dl)
