@@ -17,6 +17,7 @@
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/CameraInfo.h>
 #include <nav_msgs/Odometry.h>
+#include <geometry_msgs/Twist.h>
 #include "tf/transform_broadcaster.h"
 
 #include <vector>
@@ -99,5 +100,7 @@ protected:
 
 	std::string name;
 };
+
+std::string getModelName(Stg::Model * mod, bool trim_parent);
 
 #endif /* STAGE_ROS_SRC_ROBOT_H_ */

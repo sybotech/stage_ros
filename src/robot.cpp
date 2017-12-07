@@ -15,11 +15,13 @@
 #define CMD_VEL "cmd_vel"
 #define BASE_POSE_GROUND_TRUTH "base_pose_ground_truth"
 
-std::string getModelName(Stg::Model * mod)
+std::string getModelName(Stg::Model * mod, bool trim_parent)
 {
 	std::string result = mod->Token();
 	Stg::Model * parent = mod->Parent();
-	std::string parent_token = parent != NULL ? parent->Token() : "";
+	std::string parent_token = "";
+	if(trim_parent && parent != NULL)
+		parent_token = parent->Token();
 
 	// Remove part from parent
 	size_t pos = result.find(parent_token);
@@ -198,28 +200,27 @@ std::string StageRobot::mapName(const char * name, int index) const
 
 void StageRobot::initROS()
 {
-	odom_pub = nh.advertise<nav_msgs::Odometry>(mapName(ODOM), 10);
-	ground_truth_pub = nh.advertise<nav_msgs::Odometry>(mapName(BASE_POSE_GROUND_TRUTH), 10);
-	cmdvel_sub = nh.subscribe(mapName(CMD_VEL), 10, &StageRobot::onCmdVel, this);
+	odom_pub = nh.advertise<nav_msgs::Odometry>(ODOM, 10);
+	ground_truth_pub = nh.advertise<nav_msgs::Odometry>(BASE_POSE_GROUND_TRUTH, 10);
+	cmdvel_sub = nh.subscribe(CMD_VEL, 10, &StageRobot::onCmdVel, this);
 
 	ROS_INFO("Found %lu laser devices and %lu cameras in robot %s", lasermodels.size(), cameramodels.size(), this->getName());
 	/// Create publishers for laser models
-	for (size_t s = 0;  s < this->lasermodels.size(); ++s)
+	for (size_t s = 0;  s < lasermodels.size(); ++s)
 	{
 		const Stg::ModelRanger * lm = this->lasermodels[s];
-		std::string topic_name = mapName(BASE_SCAN);
-
+		std::string topic_name = mapName(BASE_SCAN, s);
+		/*
 		if(lm->TokenStr() != "")
 		{
 			topic_name += "_" + lm->TokenStr();
-		}
-
+		}*/
 		/*
 		if (new_robot->lasermodels.size() == 1)
 		else
-				new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(mapName(BASE_SCAN, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
+			new_robot->laser_pubs.push_back(n_.advertise<sensor_msgs::LaserScan>(mapName(BASE_SCAN, r, s, static_cast<Stg::Model*>(new_robot->positionmodel)), 10));
 		*/
-		ROS_INFO("Will publish laser sensor #%d to topic name=%s", (int)s, topic_name.c_str());
+		ROS_INFO("Will publish laser sensor %s to topic name=%s", lm->Token(), topic_name.c_str());
 		ros::Publisher pub;
 		laser_pubs.push_back(nh.advertise<sensor_msgs::LaserScan>(topic_name, 10));
 	}
@@ -229,9 +230,9 @@ void StageRobot::initROS()
 		Stg::Model * root = static_cast<Stg::Model*>(positionmodel);
 		if (cameramodels.size() == 1)
 		{
-			image_pubs.push_back(nh.advertise<sensor_msgs::Image>(mapName(IMAGE), 10));
-			depth_pubs.push_back(nh.advertise<sensor_msgs::Image>(mapName(DEPTH), 10));
-			camera_pubs.push_back(nh.advertise<sensor_msgs::CameraInfo>(mapName(CAMERA_INFO), 10));
+			image_pubs.push_back(nh.advertise<sensor_msgs::Image>(IMAGE, 10));
+			depth_pubs.push_back(nh.advertise<sensor_msgs::Image>(DEPTH, 10));
+			camera_pubs.push_back(nh.advertise<sensor_msgs::CameraInfo>(CAMERA_INFO, 10));
 		}
 		else
 		{
