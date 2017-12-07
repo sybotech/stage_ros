@@ -17,6 +17,7 @@
 #include <sensor_msgs/image_encodings.h>
 #include <sensor_msgs/CameraInfo.h>
 #include <nav_msgs/Odometry.h>
+#include <geometry_msgs/Twist.h>
 #include "tf/transform_broadcaster.h"
 
 #include <vector>
@@ -24,62 +25,72 @@
 
 struct PublishContext
 {
-	bool use_common_root;
 	std::string root_frame_id;
 	tf::TransformBroadcaster & tf;
 	bool isDepthCanonical;
+	ros::Time time;
 };
 
 // A class that wraps robot model from the simulator
 class StageRobot
 {
 public:
-	StageRobot(const ros::NodeHandle & nh, const char * name);
+	//@param name - exported name of the robot, as seen in rostopic and TF
+	StageRobot(const char * name);
 	~StageRobot();
 
 	// Init ROS-related stuff here
-	void initROS();
+	void initROS(ros::NodeHandle& nh, bool separate);
+
 	// Get robot name
-	const char * getName() const;
+	const char* getName() const;
+
+	// Get a full name of TF frame
+	// @param index index of a sensor. Set -1 to discard an index
+	std::string getTfFrame(const char* frame, int index=-1) const;
 
 	// Return mapped name for an object
-	std::string mapName(const char * name) const;
+	//std::string mapName(const char * name) const;
 
-	std::string mapName(const char * name, int index) const;
+	std::string getTopicName(const char * name, int index=-1) const;
 
 	// Reset robot to initial state
 	void resetPose();
 
 	// Attach position model.
 	// Only one position model is allowed per robot
-	void setPositionModel(Stg::ModelPosition * pos);
+	void setPositionModel(Stg::ModelPosition* pos);
 	// Attach laser model
-	void addLaser(Stg::ModelRanger * model);
+	void addLaser(Stg::ModelRanger* model);
 	// Attach camera model
-	void addCamera(Stg::ModelCamera * model);
+	void addCamera(Stg::ModelCamera* model);
 
 	ros::Time getTime() const;
 	// Publish model-related data to ROS
 	void publishData(PublishContext & context);
+	// Update local control
+	void updateControl(const ros::Time& time);
+
+	void setControlTimeout(float timeout);
 protected:
 	// Subscriber function for velocity commands
 	void onCmdVel(const geometry_msgs::Twist& msg);
 	// Callback for stage model. We do apply acceleration control here
-	static int cb_model(Stg::ModelPosition * mod, StageRobot * sr);
+	static int cb_model(Stg::ModelPosition* mod, StageRobot* sr);
 
-	void publishLaser(PublishContext & context);
-	void publishCamera(PublishContext & context);
-	void publishOdom(PublishContext & context);
+	void publishLaser(PublishContext& context);
+	void publishCamera(PublishContext& context);
+	void publishOdom(PublishContext& context);
 	// Node handle points to proper namespace. All robot's publishers are created relative to this NodeHandle
-	ros::NodeHandle nh;
+	//ros::NodeHandle nh;
 	//stage related models
 	Stg::ModelPosition* positionmodel; //one position
-	std::vector<Stg::ModelCamera *> cameramodels; 	//< multiple cameras per position
-	std::vector<Stg::ModelRanger *> lasermodels; 		//< multiple rangers per position
+	std::vector<Stg::ModelCamera*> cameramodels; 	//< multiple cameras per position
+	std::vector<Stg::ModelRanger*> lasermodels; 		//< multiple rangers per position
 
 	//ros publishers
-	ros::Publisher odom_pub; //one odom
-	ros::Publisher ground_truth_pub; //one ground truth
+	ros::Publisher odom_pub; 					//one odom
+	ros::Publisher ground_truth_pub; 	//one ground truth
 
 	std::vector<ros::Publisher> image_pubs; 	//multiple images
 	std::vector<ros::Publisher> depth_pubs; 	//multiple depths
@@ -98,6 +109,17 @@ protected:
 	Stg::Pose initial_pose;
 
 	std::string name;
+	// TF prefix for all robot's frames
+	std::string tf_prefix;
+	// Namespace for all robot's topics
+	std::string topic_ns;
+
+	// Cached TF frame names
+	std::string base_link, odom_frame_id, base_footprint;
+
+	float control_timeout = -1;
 };
+
+std::string getModelName(Stg::Model * mod, bool trim_parent);
 
 #endif /* STAGE_ROS_SRC_ROBOT_H_ */

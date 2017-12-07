@@ -1,4 +1,4 @@
-cmake_minimum_required(VERSION 2.8.3)
+cmake_minimum_required(VERSION 3.1.0)
 project(stage_ros)
 
 find_package(catkin REQUIRED
@@ -28,8 +28,10 @@ if(STAGE_USE_GUI)
 	add_definitions(-DHAS_STAGE_GUI)
 endif(STAGE_USE_GUI)
 
+set (CMAKE_CXX_STANDARD 11)
 # Declare a cpp executable
-add_executable(stageros src/robot.cpp src/stageros.cpp)
+add_executable(stageros src/main.cpp src/robot.cpp src/stageros.cpp)
+
 set(${PROJECT_NAME}_extra_libs "")
 if(UNIX AND NOT APPLE)
   set(${PROJECT_NAME}_extra_libs dl)
