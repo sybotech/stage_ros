@@ -34,7 +34,7 @@ struct PublishContext
 class StageRobot
 {
 public:
-	StageRobot(const ros::NodeHandle & nh, Stg::ModelPosition * positionmodel);
+	StageRobot(const ros::NodeHandle & nh, const char * name);
 	~StageRobot();
 
 	// Init ROS-related stuff here
@@ -43,14 +43,19 @@ public:
 	const char * getName() const;
 
 	// Return mapped name for an object
-	const char * mapName(const char * name) const;
+	std::string mapName(const char * name) const;
 
-	const char * mapName(const char * name, int index) const;
+	std::string mapName(const char * name, int index) const;
 
 	// Reset robot to initial state
 	void resetPose();
 
+	// Attach position model.
+	// Only one position model is allowed per robot
+	void setPositionModel(Stg::ModelPosition * pos);
+	// Attach laser model
 	void addLaser(Stg::ModelRanger * model);
+	// Attach camera model
 	void addCamera(Stg::ModelCamera * model);
 
 	ros::Time getTime() const;
@@ -91,6 +96,8 @@ protected:
 	Stg::Pose base_last_globalpos;
 
 	Stg::Pose initial_pose;
+
+	std::string name;
 };
 
 #endif /* STAGE_ROS_SRC_ROBOT_H_ */

@@ -15,12 +15,107 @@
 #define CMD_VEL "cmd_vel"
 #define BASE_POSE_GROUND_TRUTH "base_pose_ground_truth"
 
-StageRobot::StageRobot(const ros::NodeHandle & nh, Stg::ModelPosition * positionmodel)
+std::string getModelName(Stg::Model * mod)
+{
+	std::string result = mod->Token();
+	Stg::Model * parent = mod->Parent();
+	std::string parent_token = parent != NULL ? parent->Token() : "";
+
+	// Remove part from parent
+	size_t pos = result.find(parent_token);
+	if(pos != std::string::npos)
+	{
+		result.erase(0, pos);
+	}
+	// Erase extra symbols
+	for(std::string::iterator it = result.begin(); it != result.end(); ++it)
+	{
+		if(*it == ':' || *it == '.')
+		{
+			*it = '_';
+		}
+	}
+	return result;
+}
+
+/*
+// since stageros is single-threaded, this is OK. revisit if that changes!
+const char * StageNode::mapName(const char *name, size_t robotID, Stg::Model* mod) const
+{
+    //ROS_INFO("Robot %lu: Device %s", robotID, name);
+    bool umn = this->use_model_names;
+
+    if ((positionmodels.size() > 1 ) || umn)
+    {
+        static char buf[100];
+        std::size_t found = std::string(((Stg::Ancestor *) mod)->Token()).find(":");
+
+        if ((found==std::string::npos) && umn)
+        {
+            snprintf(buf, sizeof(buf), "/%s/%s", ((Stg::Ancestor *) mod)->Token(), name);
+        }
+        else
+        {
+            snprintf(buf, sizeof(buf), "/robot_%u/%s", (unsigned int)robotID, name);
+        }
+
+        return buf;
+    }
+    else
+        return name;
+}
+
+const char * StageNode::mapName(const char *name, size_t robotID, size_t deviceID, Stg::Model* mod) const
+{
+    //ROS_INFO("Robot %lu: Device %s:%lu", robotID, name, deviceID);
+    bool umn = this->use_model_names;
+
+    if ((positionmodels.size() > 1 ) || umn)
+    {
+        static char buf[100];
+        std::size_t found = std::string(((Stg::Ancestor *) mod)->Token()).find(":");
+
+        if ((found==std::string::npos) && umn)
+        {
+            snprintf(buf, sizeof(buf), "/%s/%s_%u", ((Stg::Ancestor *) mod)->Token(), name, (unsigned int)deviceID);
+        }
+        else
+        {
+            snprintf(buf, sizeof(buf), "/robot_%u/%s_%u", (unsigned int)robotID, name, (unsigned int)deviceID);
+        }
+
+        return buf;
+    }
+    else
+    {
+        static char buf[100];
+        snprintf(buf, sizeof(buf), "/%s_%u", name, (unsigned int)deviceID);
+        return buf;
+    }
+}
+*/
+
+
+StageRobot::StageRobot(const ros::NodeHandle & nh, const char * name)
 :nh(nh)
 {
-	this->positionmodel = positionmodel;
-	positionmodel->Subscribe();
-	positionmodel->AddCallback(Stg::Model::CB_UPDATE, (Stg::model_callback_t)&StageRobot::cb_model, this);
+	this->name = name;
+	positionmodel = NULL;
+}
+
+StageRobot::~StageRobot()
+{
+	if(positionmodel)
+		positionmodel->Unsubscribe();
+	for(int i = 0; i < this->lasermodels.size(); i++)
+		lasermodels[i]->Unsubscribe();
+	for(int i = 0; i < this->cameramodels.size(); i++)
+		cameramodels[i]->Unsubscribe();
+}
+
+const char * StageRobot::getName() const
+{
+	return name.c_str();
 }
 
 /// Calculates new acceleration
@@ -79,6 +174,26 @@ void CalculateRobotControl(Stg::ModelPosition* mp, Stg::Velocity newVel, bool ac
 	{
 		mp->SetSpeed(newVel);
 	}
+}
+
+ros::Time StageRobot::getTime() const
+{
+	Stg::World * world = this->positionmodel->GetWorld();
+	ros::Time sim_time;
+	sim_time.fromSec(world->SimTimeNow() / 1e6);
+	return sim_time;
+}
+
+std::string StageRobot::mapName(const char * name) const
+{
+	return name;
+}
+
+std::string StageRobot::mapName(const char * name, int index) const
+{
+	char buffer[255];
+	sprintf(buffer, "%s_%d", name, index);
+	return std::string(buffer);
 }
 
 void StageRobot::initROS()
@@ -144,6 +259,16 @@ void StageRobot::onCmdVel(const geometry_msgs::Twist& msg)
 
     target_vel = newVel;
     base_last_cmd = getTime();
+}
+
+void StageRobot::setPositionModel(Stg::ModelPosition * model)
+{
+	assert(model != NULL);
+	assert(this->positionmodel == NULL);
+
+	this->positionmodel = model;
+	model->Subscribe();
+	model->AddCallback(Stg::Model::CB_UPDATE, (Stg::model_callback_t)&StageRobot::cb_model, this);
 }
 
 void StageRobot::addLaser(Stg::ModelRanger * model)

@@ -144,7 +144,7 @@ private:
 public:
     // Constructor; stage itself needs argc/argv.  fname is the .world file
     // that stage should load.
-    StageNode(int argc, char** argv, bool gui, bool use_model_names);
+    StageNode(bool gui, bool use_model_names);
     ~StageNode();
 
     // Load the world and parse scene models
@@ -171,63 +171,6 @@ protected:
 	bool cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Response& response);
 };
 
-/*
-// since stageros is single-threaded, this is OK. revisit if that changes!
-const char * StageNode::mapName(const char *name, size_t robotID, Stg::Model* mod) const
-{
-    //ROS_INFO("Robot %lu: Device %s", robotID, name);
-    bool umn = this->use_model_names;
-
-    if ((positionmodels.size() > 1 ) || umn)
-    {
-        static char buf[100];
-        std::size_t found = std::string(((Stg::Ancestor *) mod)->Token()).find(":");
-
-        if ((found==std::string::npos) && umn)
-        {
-            snprintf(buf, sizeof(buf), "/%s/%s", ((Stg::Ancestor *) mod)->Token(), name);
-        }
-        else
-        {
-            snprintf(buf, sizeof(buf), "/robot_%u/%s", (unsigned int)robotID, name);
-        }
-
-        return buf;
-    }
-    else
-        return name;
-}
-
-const char * StageNode::mapName(const char *name, size_t robotID, size_t deviceID, Stg::Model* mod) const
-{
-    //ROS_INFO("Robot %lu: Device %s:%lu", robotID, name, deviceID);
-    bool umn = this->use_model_names;
-
-    if ((positionmodels.size() > 1 ) || umn)
-    {
-        static char buf[100];
-        std::size_t found = std::string(((Stg::Ancestor *) mod)->Token()).find(":");
-
-        if ((found==std::string::npos) && umn)
-        {
-            snprintf(buf, sizeof(buf), "/%s/%s_%u", ((Stg::Ancestor *) mod)->Token(), name, (unsigned int)deviceID);
-        }
-        else
-        {
-            snprintf(buf, sizeof(buf), "/robot_%u/%s_%u", (unsigned int)robotID, name, (unsigned int)deviceID);
-        }
-
-        return buf;
-    }
-    else
-    {
-        static char buf[100];
-        snprintf(buf, sizeof(buf), "/%s_%u", name, (unsigned int)deviceID);
-        return buf;
-    }
-}
-*/
-
 // A helper function that is executed for each stage model.  We use it
 // to search for models of interest.
 void ghfunc(Stg::Model* mod, SceneModels * models)
@@ -248,7 +191,6 @@ void ghfunc(Stg::Model* mod, SceneModels * models)
       models->cameramodels.push_back(dynamic_cast<Stg::ModelCamera *>(mod));
     }
 }
-
 
 bool StageNode::cb_reset_srv(std_srvs::Empty::Request& request, std_srvs::Empty::Response& response)
 {
@@ -309,7 +251,7 @@ StageNode::generateMap(nav_msgs::OccupancyGrid & map)
 	return true;
 }
 
-StageNode::StageNode(int argc, char** argv, bool gui, bool use_model_names)
+StageNode::StageNode(bool gui, bool use_model_names)
 {
 	this->use_acceleration_control = false;
 	this->persistent_world = false;
@@ -338,6 +280,7 @@ StageNode::StageNode(int argc, char** argv, bool gui, bool use_model_names)
 
 	if(!persistent_file.empty())
 		persistent_world = true;
+
 #ifdef HAS_STAGE_GUI
 	if(gui)
 			this->world = new Stg::WorldGui(600, 400, "Stage (ROS)");
@@ -421,9 +364,19 @@ int StageNode::SubscribeModels(SceneModels & models)
 		Stg::ModelPosition * positionmodel = models.positionmodels[r];
 		std::string name;
 		ROS_INFO("Found robot token=%s", positionmodel->Token());
-		StageRobotPtr robot(new StageRobot(ros::NodeHandle(n_, name), positionmodel));
+		name = positionmodel->Token();
+		StageRobotPtr robot;
+
+		if(robotmodels_.find(name) == robotmodels_.end())
+		{
+			robot.reset(new StageRobot(ros::NodeHandle(n_, name), name.c_str()));
+			robotmodels_[name] = robot;
+		}
+
+		robot->setPositionModel(positionmodel);
 		robot->initROS();
-		robotmodels_[name] = robot;
+
+
 
 		/// Gather laser models for the robot
 		for (size_t s = 0; s < models.lasermodels.size(); s++)
@@ -564,7 +517,7 @@ int main(int argc, char** argv)
 
     const char * fname = argv[argc-1];
 
-    StageNode sn(argc-1,argv,gui,use_model_names);
+    StageNode sn(gui,use_model_names);
 
     if(sn.Load(fname) != 0)
         exit(-1);
