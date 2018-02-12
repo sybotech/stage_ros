@@ -7,6 +7,10 @@
 
 #include "stageros.h"
 
+#ifdef HAS_STAGE_GUI
+#include "world_gui.hh"
+#endif
+
 #define USAGE "stageros <worldfile>"
 
 int main(int argc, char** argv)
@@ -68,7 +72,9 @@ int main(int argc, char** argv)
 	{
 #ifdef HAS_STAGE_GUI
 		if(gui)
+		{
 			Fl::wait(r.expectedCycleTime().toSec());
+		}
 		else
 #endif
 		{
@@ -77,5 +83,6 @@ int main(int argc, char** argv)
 		}
 	}
 
+	ros::shutdown();
 	t.join();
 }

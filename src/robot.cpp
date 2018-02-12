@@ -184,11 +184,14 @@ void StageRobot::initROS(ros::NodeHandle& nh, bool separate)
 	cmdvel_sub = nh.subscribe(getTopicName(CMD_VEL), 10, &StageRobot::onCmdVel, this);
 
 	ROS_INFO("Found %lu laser devices and %lu cameras in robot %s", lasermodels.size(), cameramodels.size(), this->getName());
+
+	bool collapseNames = true;
 	/// Create publishers for laser models
 	for (size_t s = 0;  s < lasermodels.size(); ++s)
 	{
 		const Stg::ModelRanger * lm = this->lasermodels[s];
-		std::string topic_name = getTopicName(BASE_SCAN, s);
+		int index = (collapseNames && lasermodels.size() == 1) ? -1 : s;
+		std::string topic_name = getTopicName(BASE_SCAN, index);
 		ROS_INFO("Will publish laser sensor %s to topic name=%s", lm->Token(), topic_name.c_str());
 		ros::Publisher pub;
 		laser_pubs.push_back(nh.advertise<sensor_msgs::LaserScan>(topic_name, 10));

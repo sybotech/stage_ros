@@ -13,7 +13,6 @@ find_package(catkin REQUIRED
 )
 
 find_package(Boost REQUIRED COMPONENTS system thread)
-
 find_package(stage REQUIRED)
 
 include_directories(
@@ -24,28 +23,44 @@ include_directories(
 
 catkin_package()
 
-if(STAGE_USE_GUI)
-	add_definitions(-DHAS_STAGE_GUI)
-endif(STAGE_USE_GUI)
-
-set (CMAKE_CXX_STANDARD 11)
-# Declare a cpp executable
-add_executable(stageros src/main.cpp src/robot.cpp src/stageros.cpp)
-
 set(${PROJECT_NAME}_extra_libs "")
 if(UNIX AND NOT APPLE)
   set(${PROJECT_NAME}_extra_libs dl)
 endif()
+
+set (CMAKE_CXX_STANDARD 11)
+
+add_library(simbase src/robot.cpp src/stageros.cpp)
+
+target_link_libraries(simbase
+  ${catkin_LIBRARIES}
+  ${Boost_LIBRARIES}
+  ${STAGE_CORE_LIBRARIES}
+  ${${PROJECT_NAME}_extra_libs}
+)
+
+# Declare a cpp executable
+add_executable(stageros src/main.cpp)
+target_link_libraries(stageros simbase)
+
+if(STAGE_USE_GUI)
+	add_definitions(-DHAS_STAGE_GUI)
+	add_executable(stagerosg src/main.cpp)
+	target_link_libraries(stagerosg simbase ${STAGE_LIBRARIES})
+endif(STAGE_USE_GUI)
+
 target_link_libraries(stageros
   ${catkin_LIBRARIES}
   ${Boost_LIBRARIES}
   ${STAGE_LIBRARIES}
   ${${PROJECT_NAME}_extra_libs}
 )
+
 if(catkin_EXPORTED_TARGETS)
   add_dependencies(stageros ${catkin_EXPORTED_TARGETS})
 endif()
 
+add_subdirectory(src/behaviours)
 ## Install
 
 install(PROGRAMS scripts/upgrade-world.sh
@@ -64,7 +79,6 @@ install(DIRECTORY world
   DESTINATION ${CATKIN_PACKAGE_SHARE_DESTINATION})
 
 ## Tests
-
 if(CATKIN_ENABLE_TESTING)
   find_package(rostest REQUIRED)
   add_rostest(test/hztest.xml)
