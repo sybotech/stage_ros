@@ -28,10 +28,11 @@
 #include <stdlib.h>
 #include <string.h>
 
+// Need this to check if world file exists
+// One day it could be replaced by std::filesystem::exists in c++17
 #include <sys/types.h>
 #include <sys/stat.h>
 #include <unistd.h>
-#include <signal.h>
 
 #include "stageros.h"
 
@@ -49,7 +50,7 @@ StageNode::StageNode(Stg::World * world, bool use_model_names)
 
 	double t;
 	ros::NodeHandle localn("~");
-	if(!localn.getParam("base_watchdog_timeout", t))
+	if(!localn.getParam("control_timeout", t))
 		t = 0.2;
 	this->base_watchdog_timeout.fromSec(t);
 
