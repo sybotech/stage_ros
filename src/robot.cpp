@@ -44,6 +44,7 @@ StageRobot::StageRobot(const char* name)
 {
 	this->name = name;
 	positionmodel = nullptr;
+	accelerationControl = false;
 }
 
 StageRobot::~StageRobot()
@@ -64,59 +65,32 @@ const char * StageRobot::getName() const
 /// Calculates new acceleration
 template<typename Scalar> Scalar calculateControl(Scalar target, Scalar &current, Scalar dt, Scalar accDec, Scalar accInc)
 {
-	if (current >= target)	// deceleration profule
+	if (current >= target)	// deceleration profile
 	{
 		if (current - target < accDec*dt)
 		{
 			current = target;
-			return Scalar(0);//(current-target)/dt;
+			return Scalar(0);
 		}
 		else
 		{
 			return -accDec;
 		}
-			//result = current - delta;
 	}
 	else	// acceleration profile
 	{
 		if (target - current < accInc*dt)
 		{
 			current = target;
-			return Scalar(0);//(target-current)/dt;//result = target;
+			return Scalar(0);
 		}
 		else
 		{
-			return accInc;//result = current + delta;
+			return accInc;
 		}
 	}
 	//return result;
 	return Scalar(0);
-}
-
-void CalculateRobotControl(Stg::ModelPosition* mp, Stg::Velocity newVel, bool acceleration)
-{
-	//double dt = ((double)mp->GetInterval() / 1e6);
-	double dt = (double)mp->GetWorld()->sim_interval / 1e6;
-
-	if(acceleration)
-	{
-		Stg::Velocity vel = mp->GetVelocity();
-		/// This velocity is used to fix 'integration' errors and make
-		/// robot follow target velocity instead of oscilation near it
-		Stg::Velocity fixedVel = vel;
-		double acceleration[3] = {0,0,0};
-
-		acceleration[0] = calculateControl<double>(newVel.x, fixedVel.x, dt, fabs(mp->acceleration_bounds[0].min), fabs(mp->acceleration_bounds[0].max));
-		acceleration[1] = calculateControl<double>(newVel.y, fixedVel.y, dt, fabs(mp->acceleration_bounds[1].min), fabs(mp->acceleration_bounds[1].max));
-		acceleration[2] = calculateControl<double>(newVel.a, fixedVel.a, dt, fabs(mp->acceleration_bounds[3].min), fabs(mp->acceleration_bounds[3].max));
-		mp->SetVelocity(fixedVel);
-		mp->SetAcceleration(acceleration[0], acceleration[1], acceleration[2]);
-		ROS_DEBUG_NAMED("Acc", "Model %s: vt=%f v0=%f v1=%f acc=%f dt=%f", mp->Token(), newVel.x, vel.x, fixedVel.x, acceleration[0], dt);
-	}
-	else
-	{
-		mp->SetSpeed(newVel);
-	}
 }
 
 ros::Time StageRobot::getTime() const
@@ -126,21 +100,6 @@ ros::Time StageRobot::getTime() const
 	sim_time.fromSec(world->SimTimeNow() / 1e6);
 	return sim_time;
 }
-/*
-std::string StageRobot::mapName(const char * name) const
-{
-	std::string result = name;
-
-	for(char& ch: result)
-	{
-		if(ch == ':' || ch == '.')
-		{
-			ch = '_';
-		}
-	}
-	return name;
-}
-*/
 
 std::string StageRobot::getTfFrame(const char* frame, int index) const
 {
@@ -215,10 +174,35 @@ void StageRobot::initROS(ros::NodeHandle& nh, bool separate)
 	}
 }
 
+void calculateAccelerationControl(Stg::ModelPosition* mp, Stg::Velocity newVel, double dt)
+{
+	Stg::Velocity vel = mp->GetVelocity();
+	/// This velocity is used to fix 'integration' errors and make
+	/// robot follow target velocity instead of oscilation near it
+	Stg::Velocity fixedVel = vel;
+	double acceleration[3] = {0,0,0};
+
+	acceleration[0] = calculateControl<double>(newVel.x, fixedVel.x, dt, fabs(mp->acceleration_bounds[0].min), fabs(mp->acceleration_bounds[0].max));
+	acceleration[1] = calculateControl<double>(newVel.y, fixedVel.y, dt, fabs(mp->acceleration_bounds[1].min), fabs(mp->acceleration_bounds[1].max));
+	acceleration[2] = calculateControl<double>(newVel.a, fixedVel.a, dt, fabs(mp->acceleration_bounds[3].min), fabs(mp->acceleration_bounds[3].max));
+	mp->SetVelocity(fixedVel);
+	mp->SetAcceleration(acceleration[0], acceleration[1], acceleration[2]);
+	ROS_DEBUG_NAMED("Acc", "Model %s: vt=%f v0=%f v1=%f acc=%f dt=%f", mp->Token(), newVel.x, vel.x, fixedVel.x, acceleration[0], dt);
+}
+
+void calculateVelocityControl(Stg::ModelPosition* mp, Stg::Velocity newVel, double dt)
+{
+	mp->SetSpeed(newVel);
+}
+
 int StageRobot::cb_model(Stg::ModelPosition * mod, StageRobot * sr)
 {
-	/// Apply acceleration control
-	CalculateRobotControl(sr->positionmodel, sr->target_vel, true);
+	double dt = (double)mod->GetWorld()->sim_interval / 1e6;
+	/// Calculate robot's speed
+	if(sr->accelerationControl)
+		calculateAccelerationControl(sr->positionmodel, sr->target_vel, dt);
+	else
+		calculateVelocityControl(sr->positionmodel, sr->target_vel, dt);
 	return 0;
 }
 
@@ -434,14 +418,13 @@ void StageRobot::publishCamera(PublishContext & context)
 
 		//sending camera's tf and info only if image or depth topics are subscribed to
 		if ((image_pubs[s].getNumSubscribers()>0 && cameramodel->FrameColor())
-						|| (depth_pubs[s].getNumSubscribers()>0 && cameramodel->FrameDepth()))
+			||(depth_pubs[s].getNumSubscribers()>0 && cameramodel->FrameDepth()))
 		{
-
 			Stg::Pose lp = cameramodel->GetPose();
-			tf::Quaternion Q; Q.setRPY((cameramodel->getCamera().pitch()*M_PI/180.0)-M_PI,
-									0.0,
-									lp.a+(cameramodel->getCamera().yaw()*M_PI/180.0) - positionmodel->GetPose().a
-									);
+			double roll = cameramodel->getCamera().pitch()*M_PI/180.0-M_PI;
+			double yaw = lp.a+(cameramodel->getCamera().yaw()*M_PI/180.0) - positionmodel->GetPose().a;
+			tf::Quaternion Q;
+			Q.setRPY(roll, 0.0, yaw);
 
 			tf::Transform tr(Q, tf::Point(lp.x, lp.y, positionmodel->GetGeom().size.z+lp.z));
 			tf::StampedTransform stamped_tr(tr, sim_time, base_link, frame_id);
@@ -462,8 +445,6 @@ void StageRobot::publishCamera(PublishContext & context)
 			//double fy_ = 1.43266615300557*this->cameramodels[r]->getHeight()/tan(fovv);
 			fx = cameramodel->getWidth()/(2*tan(fovh/2));
 			fy = cameramodel->getHeight()/(2*tan(fovv/2));
-
-			//ROS_INFO("fx=%.4f,%.4f; fy=%.4f,%.4f", fx, fx_, fy, fy_);
 
 			camera_msg.D.resize(4, 0.0);
 
@@ -496,6 +477,30 @@ void StageRobot::updateControl(const ros::Time& time)
 	}
 }
 
+Stg::Velocity StageRobot::updateVelocityEstimate(const ros::Time& sim_time)
+{
+	// Velocity is 0 by default and will be set only if there is previous pose and time delta>0
+	Stg::Velocity gvel(0,0,0,0);
+	Stg::Pose gpose = positionmodel->GetGlobalPose();
+
+	double dT = (sim_time-base_last_globalpos_time).toSec();
+	if (dT>0)
+	{
+		Stg::Pose prevpose = this->base_last_globalpos;
+
+		gvel = Stg::Velocity(
+								(gpose.x - prevpose.x)/dT,
+								(gpose.y - prevpose.y)/dT,
+								(gpose.z - prevpose.z)/dT,
+								Stg::normalize(gpose.a - prevpose.a)/dT
+								);
+	}
+
+	this->base_last_globalpos = gpose;
+	this->base_last_globalpos_time = sim_time;
+	return gvel;
+}
+
 void StageRobot::publishOdom(PublishContext & context)
 {
 	ros::Time sim_time = context.time;
@@ -511,18 +516,16 @@ void StageRobot::publishOdom(PublishContext & context)
   odom_msg.pose.pose.position.y = positionmodel->est_pose.y;
   odom_msg.pose.pose.orientation = tf::createQuaternionMsgFromYaw(positionmodel->est_pose.a);
 
-  // This velocity is not a real velocity. It is 'intended' velocity
-  Stg::Velocity v = positionmodel->GetVelocity();
+  Stg::Velocity v = this->updateVelocityEstimate(sim_time);
   odom_msg.twist.twist.linear.x = v.x;
   odom_msg.twist.twist.linear.y = v.y;
   odom_msg.twist.twist.angular.z = v.a;
 
-  //@todo Publish stall on a separate topic when one becomes available
+  //TODO: Publish stall on a separate topic when one becomes available
   //this->odomMsgs[r].stall = this->positionmodels[r]->Stall();
   //
   odom_msg.header.frame_id = context.root_frame_id.empty() ?  odom_frame_id: context.root_frame_id;
   odom_msg.header.stamp = sim_time;
-  //static_cast<Stg::Model*>(positionmodel)
   odom_msg.child_frame_id = base_footprint;
   odom_pub.publish(odom_msg);
 
@@ -544,28 +547,8 @@ void StageRobot::publishOdom(PublishContext & context)
   Stg::Pose gpose = positionmodel->GetGlobalPose();
   tf::Quaternion q_gpose;
   q_gpose.setRPY(0.0, 0.0, gpose.a);
+
   tf::Transform gt(q_gpose, tf::Point(gpose.x, gpose.y, 0.0));
-
-  /// Does anybody use it?
-  // Velocity is 0 by default and will be set only if there is previous pose and time delta>0
-  Stg::Velocity gvel(0,0,0,0);
-
-	Stg::Pose prevpose = this->base_last_globalpos;
-	double dT = (sim_time-base_last_globalpos_time).toSec();
-	if (dT>0)
-	{
-		gvel = Stg::Velocity(
-								(gpose.x - prevpose.x)/dT,
-								(gpose.y - prevpose.y)/dT,
-								(gpose.z - prevpose.z)/dT,
-								Stg::normalize(gpose.a - prevpose.a)/dT
-								);
-	}
-
-	this->base_last_globalpos = gpose;
-	this->base_last_globalpos_time = sim_time;
-  //  this->base_last_globalpos.push_back(gpose);
-
   nav_msgs::Odometry ground_truth_msg;
   ground_truth_msg.pose.pose.position.x     = gt.getOrigin().x();
   ground_truth_msg.pose.pose.position.y     = gt.getOrigin().y();
@@ -574,10 +557,10 @@ void StageRobot::publishOdom(PublishContext & context)
   ground_truth_msg.pose.pose.orientation.y  = gt.getRotation().y();
   ground_truth_msg.pose.pose.orientation.z  = gt.getRotation().z();
   ground_truth_msg.pose.pose.orientation.w  = gt.getRotation().w();
-  ground_truth_msg.twist.twist.linear.x = gvel.x;
-  ground_truth_msg.twist.twist.linear.y = gvel.y;
-  ground_truth_msg.twist.twist.linear.z = gvel.z;
-  ground_truth_msg.twist.twist.angular.z = gvel.a;
+  ground_truth_msg.twist.twist.linear.x = v.x;
+  ground_truth_msg.twist.twist.linear.y = v.y;
+  ground_truth_msg.twist.twist.linear.z = v.z;
+  ground_truth_msg.twist.twist.angular.z = v.a;
 
   ground_truth_msg.header.frame_id = odom_frame_id;
   ground_truth_msg.header.stamp = sim_time;

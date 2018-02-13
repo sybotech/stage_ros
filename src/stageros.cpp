@@ -213,6 +213,8 @@ int StageNode::ExportModels(SceneModels & models)
 			continue;
 		}
 
+		robot->accelerationControl = use_acceleration_control;
+
 		robot->setPositionModel(positionmodel);
 
 		/// Gather laser models for the robot

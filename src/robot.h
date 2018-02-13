@@ -40,7 +40,7 @@ public:
 	~StageRobot();
 
 	// Init ROS-related stuff here
-	void initROS(ros::NodeHandle& nh, bool separate);
+	void initROS(ros::NodeHandle& nh, bool separate_ns);
 
 	// Get robot name
 	const char* getName() const;
@@ -72,11 +72,16 @@ public:
 	void updateControl(const ros::Time& time);
 
 	void setControlTimeout(float timeout);
+
+	bool accelerationControl;
 protected:
 	// Subscriber function for velocity commands
 	void onCmdVel(const geometry_msgs::Twist& msg);
 	// Callback for stage model. We do apply acceleration control here
 	static int cb_model(Stg::ModelPosition* mod, StageRobot* sr);
+
+	// Update an estimate about robot's velocity
+	Stg::Velocity updateVelocityEstimate(const ros::Time& sim_time);
 
 	void publishLaser(PublishContext& context);
 	void publishCamera(PublishContext& context);
