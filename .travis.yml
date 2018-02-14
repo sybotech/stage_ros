@@ -9,6 +9,8 @@ env:
   global:
     - CATKIN_WS=~/catkin_ws
     - CATKIN_WS_SRC=${CATKIN_WS}/src
+    - LOCAL_INSTALL_PREFIX=~/install
+    - LOCAL_STAGE_PREFIX=$LOCAL_INSTALL_PREFIX/lib/cmake/Stage
   matrix:
     - CI_ROS_DISTRO="indigo"
     - CI_ROS_DISTRO="jade"
@@ -24,7 +26,7 @@ install:
   # Getting separate fork of emulator
   - wget --no-check-certificate https://github.com/sybotech/stage/archive/headless_without_fltk.tar.gz
   - tar -xzvf headless_without_fltk.tar.gz
-  - pushd Stage-headless_without_fltk && mkdir -p build && pushd build && cmake .. && make && sudo make install && popd && popd
+  - pushd Stage-headless_without_fltk && mkdir -p build && pushd build && cmake -DCMAKE_INSTALL_PREFIX=$LOCAL_INSTALL_PREFIX.. && make && sudo make install && popd && popd
 script:
   - source /opt/ros/$CI_ROS_DISTRO/setup.bash
   - mkdir -p $CATKIN_WS_SRC
@@ -34,7 +36,7 @@ script:
   # Enable install space
   - catkin config --install
   # Build [and Install] packages
-  - catkin build --no-status -vi --no-notify -DCMAKE_BUILD_TYPE=Release
+  - catkin build --no-status -vi --no-notify -DCMAKE_BUILD_TYPE=Release -Dstage_DIR=$LOCAL_STAGE_PREFIX
   # Build tests
   - catkin build --no-status -vi --no-notify --make-args tests
   # Run tests
