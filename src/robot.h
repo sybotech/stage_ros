@@ -107,9 +107,9 @@ protected:
 	ros::Time base_last_cmd;
 
 	// Last time we saved global position (for velocity calculation).
-	ros::Time base_last_globalpos_time;
+	ros::Time last_globalpos_time;
 	// Last published global pose of each robot
-	Stg::Pose base_last_globalpos;
+	Stg::Pose last_globalpos;
 
 	Stg::Pose initial_pose;
 

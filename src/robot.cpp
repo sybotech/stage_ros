@@ -229,6 +229,7 @@ void StageRobot::setPositionModel(Stg::ModelPosition * model)
 	assert(this->positionmodel == NULL);
 
 	this->positionmodel = model;
+	this->last_globalpos = positionmodel->GetGlobalPose();
 	model->Subscribe();
 	model->AddCallback(Stg::Model::CB_UPDATE, (Stg::model_callback_t)&StageRobot::cb_model, this);
 }
@@ -483,10 +484,14 @@ Stg::Velocity StageRobot::updateVelocityEstimate(const ros::Time& sim_time)
 	Stg::Velocity gvel(0,0,0,0);
 	Stg::Pose gpose = positionmodel->GetGlobalPose();
 
-	double dT = (sim_time-base_last_globalpos_time).toSec();
+	// Set timestamp for the first time
+	if(last_globalpos_time.toSec() <= 0.001)
+		last_globalpos_time = sim_time;
+
+	double dT = (sim_time-last_globalpos_time).toSec();
 	if (dT>0)
 	{
-		Stg::Pose prevpose = this->base_last_globalpos;
+		Stg::Pose prevpose = this->last_globalpos;
 
 		gvel = Stg::Velocity(
 								(gpose.x - prevpose.x)/dT,
@@ -496,8 +501,8 @@ Stg::Velocity StageRobot::updateVelocityEstimate(const ros::Time& sim_time)
 								);
 	}
 
-	this->base_last_globalpos = gpose;
-	this->base_last_globalpos_time = sim_time;
+	this->last_globalpos = gpose;
+	this->last_globalpos_time = sim_time;
 	return gvel;
 }
 
